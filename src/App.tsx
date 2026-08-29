@@ -125,7 +125,7 @@ const INITIAL_SKELETONS = [
     type: "text",
     x: 175,
     y: 370,
-    text: "Build together.",
+    text: "Together.",
     width: 380,
     height: 30,
     fontSize: 20,
