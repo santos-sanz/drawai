@@ -1,12 +1,9 @@
-export type DrawingToolAction = "sticky_note" | "user_journey" | "highlight_area" | "label_element";
-
 export interface DrawingTool {
   id: string;
   name: string;
   title: string;
   description: string;
-  inputLabel: string;
-  action: DrawingToolAction;
+  instruction: string;
   createdAt: string;
 }
 

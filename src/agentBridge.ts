@@ -13,11 +13,18 @@ type AgentMessage = {
   input?: Record<string, unknown>;
 };
 
+export type AgentToolSummary = {
+  name: string;
+  title?: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+};
+
 export interface PublicDrawAIAgentAPI {
   protocol: string;
   channel: string;
-  connect: (agentId?: string) => Promise<{ connected: true; agentId: string; tools: Array<{ name: string; title?: string; description: string }> }>;
-  listTools: () => Array<{ name: string; title?: string; description: string }>;
+  connect: (agentId?: string) => Promise<{ connected: true; agentId: string; tools: AgentToolSummary[] }>;
+  listTools: () => AgentToolSummary[];
   invoke: (tool: string, input?: Record<string, unknown>) => Promise<unknown>;
 }
 
@@ -101,8 +108,8 @@ export class DrawAIAgentBridge {
     return this.agents.size;
   }
 
-  private toolSummaries(): Array<{ name: string; title?: string; description: string }> {
-    return this.tools.map(({ name, title, description }) => ({ name, title, description }));
+  private toolSummaries(): AgentToolSummary[] {
+    return this.tools.map(({ name, title, description, inputSchema }) => ({ name, title, description, inputSchema }));
   }
 
   private async handleMessage(value: unknown, event: MessageEvent, transport: AgentTransport): Promise<void> {

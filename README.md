@@ -1,13 +1,14 @@
 # DrawAI
 
-DrawAI is an Excalidraw-quality collaborative canvas for humans and agents. A person can draw with the native editor while an agent reads the shared scene, adds editable elements, and creates new drawing tools with the person.
+DrawAI is a minimal shared canvas for humans and agents. A person can draw with the native editor while an agent reads the scene, composes meaning, and extends the live tool registry.
 
-The product starts small on purpose and grows with the user's vocabulary:
+The canvas has no seeded business example or hardcoded domain vocabulary. The agent owns the semantics; the browser owns the safe rendering boundary:
 
 - The editor is the official @excalidraw/excalidraw React component, so selection, freehand drawing, shapes, arrows, text, zoom, undo/redo, export, menus, and keyboard shortcuts are real editor capabilities.
-- The base WebMCP surface has four strict tools: get_canvas_snapshot, draw_shape, draw_process_flow, and create_drawing_tool.
-- Tool Studio turns a short description into a reusable canvas tool. Custom tools are immediately added to the live registry and are available to both the agent and the human.
-- `draw_process_flow` turns an ordered list of stages into a readable, serpentine flowchart with editable nodes and connectors. It is ready for the example: “Haz un diagrama de flujo del proceso de fabricación de un envase metalico para pintura”.
+- The base WebMCP surface has four strict tools: `get_canvas_snapshot`, `draw_shape`, `compose_canvas`, and `create_drawing_tool`.
+- `compose_canvas` accepts agent-provided nodes and relationships. The client validates the graph, computes a generic layout, and renders editable Excalidraw elements; it does not decide what the nodes mean.
+- Layout computation uses a WebGPU compute shader when the browser exposes an adapter and falls back to a deterministic CPU implementation otherwise.
+- Tool Studio turns an agent instruction into a reusable graph-capable tool. Custom tools are immediately added to the live registry and are available to both the agent and the human.
 - A local scene and tool registry are autosaved in the browser for fast iteration.
 
 ## Run locally
@@ -34,6 +35,8 @@ DrawAI detects the current browser capability in this order:
 
 Every registered tool includes a strict JSON Schema and an AbortSignal. The registration surface is rebuilt when a custom tool is created, updated, or deleted. Tool execution uses the same ExcalidrawImperativeAPI.updateScene path as the human editor, which keeps agent and human changes in one scene.
 
+`compose_canvas` is deliberately generic. An external agent can turn a request such as a manufacturing workflow, a product architecture, or a personal plan into its own graph, then send that graph to DrawAI. DrawAI does not contain fixtures for any of those domains.
+
 The current WebMCP API is a proposed web standard and may require a browser preview or an injected modelContext implementation. DrawAI remains fully usable without it.
 
 ## Agent bridge
@@ -59,16 +62,14 @@ channel.postMessage({
   type: "drawai:invoke",
   requestId,
   agentId: "factory-planner",
-  tool: "draw_process_flow",
+  tool: "compose_canvas",
   input: {
-    title: "Metal paint container",
-    stages: [
-      { name: "Cut sheet" },
-      { name: "Form body" },
-      { name: "Join seam" },
-      { name: "Coat and cure" },
-      { name: "Fill and pack" }
+    title: "Agent-provided canvas",
+    nodes: [
+      { id: "a", label: "First idea" },
+      { id: "b", label: "Next idea", description: "The agent supplies this context." }
     ],
+    edges: [{ source: "a", target: "b", label: "leads to" }],
     replace: true
   }
 });
@@ -79,24 +80,18 @@ For an in-page integration, the same capability is exposed directly:
 ~~~js
 const agent = window.__drawaiAgent;
 await agent.connect("my-agent");
-await agent.invoke("draw_process_flow", {
-  title: "Metal paint container",
-  stages: [{ name: "Cut sheet" }, { name: "Form body" }, { name: "Coat and cure" }]
+await agent.invoke("compose_canvas", {
+  title: "Agent-provided canvas",
+  nodes: [{ id: "a", label: "First idea" }, { id: "b", label: "Next idea" }],
+  edges: [{ source: "a", target: "b" }]
 });
 ~~~
 
 The bridge rejects unknown tools, limits browser messaging to the same origin, and always executes through the same shared-canvas path used by WebMCP.
 
-## Custom drawing actions
+## Custom tools
 
-Tool Studio currently composes safe, editable actions:
-
-- Sticky note
-- User journey
-- Highlight area
-- Label element
-
-This is intentionally a foundation rather than a closed command list: adding an action expands the same tool registry without replacing the editor.
+Custom tools are metadata plus an agent instruction. Their input contract is the same graph shape as `compose_canvas`, so the agent can extend DrawAI with domain-specific capabilities without adding a hardcoded action catalog to the client. The instruction is exposed in the live WebMCP schema to help the agent choose the right tool.
 
 ## Hackathon
 

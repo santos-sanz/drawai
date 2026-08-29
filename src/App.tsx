@@ -7,23 +7,11 @@ import type {
   OrderedExcalidrawElement,
 } from "@excalidraw/excalidraw/element/types";
 import {
-  Activity,
-  ArrowUpRight,
-  Bot,
   Cable,
-  Check,
-  ChevronDown,
-  CircleDashed,
   Code2,
   GitBranch,
-  LayoutTemplate,
-  MousePointer2,
   Radio,
-  Pencil,
-  Plus,
   Sparkles,
-  Trash2,
-  WandSparkles,
   X,
 } from "lucide-react";
 import "@excalidraw/excalidraw/index.css";
@@ -35,134 +23,62 @@ import {
   type WebMCPToolDefinition,
 } from "./runtime";
 import { DRAWAI_AGENT_PROTOCOL, DrawAIAgentBridge } from "./agentBridge";
-import type { AgentEvent, DrawingTool, DrawingToolAction } from "./types";
+import { computeGraphLayout, type GraphEdgeInput, type LayoutMode } from "./clientCompute";
+import type { AgentEvent, DrawingTool } from "./types";
 
-const SCENE_KEY = "drawai-scene-v1";
-const TOOLS_KEY = "drawai-tools-v1";
-
-const INITIAL_SKELETONS = [
-  {
-    type: "rectangle",
-    x: 140,
-    y: 190,
-    width: 240,
-    height: 118,
-    strokeColor: "#4c3a80",
-    backgroundColor: "#f0ebff",
-    fillStyle: "solid",
-    roundness: { type: 3 },
-    label: { text: "DrawAI", fontSize: 24 },
-  },
-  {
-    type: "rectangle",
-    x: 420,
-    y: 190,
-    width: 240,
-    height: 118,
-    strokeColor: "#207f72",
-    backgroundColor: "#e7f7f2",
-    fillStyle: "solid",
-    roundness: { type: 3 },
-    label: { text: "Human intent", fontSize: 22 },
-  },
-  {
-    type: "rectangle",
-    x: 700,
-    y: 190,
-    width: 240,
-    height: 118,
-    strokeColor: "#9f5b17",
-    backgroundColor: "#fff3da",
-    fillStyle: "solid",
-    roundness: { type: 3 },
-    label: { text: "Agent action", fontSize: 22 },
-  },
-  {
-    type: "rectangle",
-    x: 420,
-    y: 435,
-    width: 240,
-    height: 118,
-    strokeColor: "#315c91",
-    backgroundColor: "#e9f1ff",
-    fillStyle: "solid",
-    roundness: { type: 3 },
-    label: { text: "Shared canvas", fontSize: 22 },
-  },
-  {
-    type: "arrow",
-    x: 380,
-    y: 249,
-    points: [
-      [0, 0],
-      [40, 0],
-    ],
-    strokeColor: "#6b5b95",
-    strokeWidth: 2,
-    endArrowhead: "arrow",
-  },
-  {
-    type: "arrow",
-    x: 660,
-    y: 249,
-    points: [
-      [0, 0],
-      [40, 0],
-    ],
-    strokeColor: "#6b5b95",
-    strokeWidth: 2,
-    endArrowhead: "arrow",
-  },
-  {
-    type: "arrow",
-    x: 540,
-    y: 308,
-    points: [
-      [0, 0],
-      [0, 127],
-    ],
-    strokeColor: "#6b5b95",
-    strokeWidth: 2,
-    endArrowhead: "arrow",
-  },
-] as ExcalidrawElementSkeleton[];
-
-const INITIAL_ELEMENTS = convertToExcalidrawElements(INITIAL_SKELETONS, {
-  regenerateIds: true,
-});
+const SCENE_KEY = "drawai-scene-v2";
+const TOOLS_KEY = "drawai-tools-v2";
 
 const BASE_TOOL_META: Array<
   Pick<WebMCPToolDefinition, "name" | "title" | "description" | "inputSchema" | "annotations">
 > = [
   {
-    name: "draw_process_flow",
-    title: "Draw a process flow",
+    name: "compose_canvas",
+    title: "Compose a canvas",
     description:
-      "Create a structured multi-stage process flow on the shared canvas. Use it for manufacturing, operations, or any ordered workflow.",
+      "Render an agent-planned graph on the shared canvas. The agent supplies the meaning, nodes, and relationships; DrawAI validates and lays them out locally.",
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Flowchart title." },
-        stages: {
+        title: { type: "string", description: "Optional canvas title." },
+        nodes: {
           type: "array",
-          minItems: 2,
-          maxItems: 16,
-          description: "Ordered process stages, each with a name and optional description.",
+          minItems: 1,
+          maxItems: 128,
+          description: "Semantic nodes selected and ordered by the agent.",
           items: {
             type: "object",
             properties: {
-              name: { type: "string", description: "Short stage name." },
-              description: { type: "string", description: "Optional stage detail." },
+              id: { type: "string", description: "Stable node id." },
+              label: { type: "string", description: "Human-readable node label." },
+              description: { type: "string", description: "Optional supporting detail." },
+              kind: { type: "string", description: "Optional semantic category." },
             },
-            required: ["name"],
+            required: ["id", "label"],
             additionalProperties: false,
           },
         },
-        x: { type: "number", description: "Canvas x coordinate for the flow." },
-        y: { type: "number", description: "Canvas y coordinate for the flow." },
+        edges: {
+          type: "array",
+          maxItems: 256,
+          description: "Semantic relationships selected by the agent.",
+          items: {
+            type: "object",
+            properties: {
+              source: { type: "string", description: "Source node id." },
+              target: { type: "string", description: "Target node id." },
+              label: { type: "string", description: "Optional relationship label." },
+            },
+            required: ["source", "target"],
+            additionalProperties: false,
+          },
+        },
+        layout: { type: "string", enum: ["auto", "flow", "tree", "grid"], description: "Local layout strategy." },
+        x: { type: "number", description: "Canvas x coordinate." },
+        y: { type: "number", description: "Canvas y coordinate." },
         replace: { type: "boolean", description: "Replace the current scene when true; defaults to appending." },
       },
-      required: ["title", "stages"],
+      required: ["nodes"],
       additionalProperties: false,
     },
     annotations: { untrustedContentHint: true },
@@ -217,11 +133,7 @@ const BASE_TOOL_META: Array<
         name: { type: "string", description: "Tool name, normalized to snake_case." },
         title: { type: "string", description: "Human-readable tool title." },
         description: { type: "string", description: "What the tool does." },
-        inputLabel: { type: "string", description: "What input the tool asks for." },
-        action: {
-          type: "string",
-          enum: ["sticky_note", "user_journey", "highlight_area", "label_element"],
-        },
+        instruction: { type: "string", description: "Instruction that tells an agent how to use this specialized capability." },
       },
       required: ["operation"],
       additionalProperties: false,
@@ -230,27 +142,18 @@ const BASE_TOOL_META: Array<
   },
 ];
 
-const ACTION_LABELS: Record<DrawingToolAction, string> = {
-  sticky_note: "Sticky note",
-  user_journey: "User journey",
-  highlight_area: "Highlight area",
-  label_element: "Label element",
-};
-
 type ToolFormState = {
   name: string;
   title: string;
   description: string;
-  inputLabel: string;
-  action: DrawingToolAction;
+  instruction: string;
 };
 
 const EMPTY_TOOL_FORM: ToolFormState = {
   name: "",
   title: "",
   description: "",
-  inputLabel: "What should the tool add?",
-  action: "sticky_note",
+  instruction: "Ask the agent to supply a graph for this capability.",
 };
 
 function makeId(prefix: string): string {
@@ -270,11 +173,11 @@ function clockTime(): string {
 function loadScene(): OrderedExcalidrawElement[] {
   try {
     const stored = localStorage.getItem(SCENE_KEY);
-    if (!stored) return INITIAL_ELEMENTS;
+    if (!stored) return [];
     const parsed = JSON.parse(stored) as { elements?: OrderedExcalidrawElement[] };
-    return Array.isArray(parsed.elements) ? parsed.elements : INITIAL_ELEMENTS;
+    return Array.isArray(parsed.elements) ? parsed.elements : [];
   } catch {
-    return INITIAL_ELEMENTS;
+    return [];
   }
 }
 
@@ -302,131 +205,6 @@ function getInputText(input: Record<string, unknown>, fallback: string): string 
   return stringValue(input.text ?? input.input ?? input.label ?? input.title, fallback);
 }
 
-const DEFAULT_METAL_PAINT_STAGES = [
-  "Especificaciones y chapa",
-  "Desbobinado y nivelado",
-  "Corte de blanks",
-  "Conformado del cuerpo",
-  "Cierre de costura",
-  "Pestaña y reborde",
-  "Montaje de la base",
-  "Recubrimiento y curado",
-  "Tapa y asa",
-  "Llenado, etiqueta y embalaje",
-];
-
-type ProcessStage = { name: string; description?: string };
-
-function processFlowSkeletons(input: Record<string, unknown>): ExcalidrawElementSkeleton[] {
-  const title = stringValue(input.title, "Process flow");
-  const rawStages = Array.isArray(input.stages) ? input.stages : DEFAULT_METAL_PAINT_STAGES;
-  const stages: ProcessStage[] = rawStages
-    .map((stage) => {
-      if (typeof stage === "string") return { name: stage.trim() };
-      if (stage && typeof stage === "object") {
-        const value = stage as Record<string, unknown>;
-        return {
-          name: stringValue(value.name, "Unnamed stage"),
-          description: stringValue(value.description),
-        };
-      }
-      return { name: "Unnamed stage" };
-    })
-    .filter((stage) => stage.name)
-    .slice(0, 16);
-  const safeStages: ProcessStage[] = stages.length >= 2 ? stages : DEFAULT_METAL_PAINT_STAGES.map((name) => ({ name }));
-  const x = numeric(input.x, 72);
-  const y = numeric(input.y, 120);
-  const columns = Math.min(4, Math.max(2, safeStages.length));
-  const nodeWidth = 190;
-  const nodeHeight = 96;
-  const gapX = 38;
-  const gapY = 74;
-  const titleHeight = 64;
-  const positions = safeStages.map((_, index) => {
-    const row = Math.floor(index / columns);
-    const columnInRow = index % columns;
-    const column = row % 2 === 0 ? columnInRow : columns - 1 - columnInRow;
-    return {
-      x: x + column * (nodeWidth + gapX),
-      y: y + titleHeight + 36 + row * (nodeHeight + gapY),
-      row,
-      column,
-    };
-  });
-  const palette = [
-    ["#5b3f8f", "#eee7ff"],
-    ["#167d72", "#dff5ed"],
-    ["#b86a22", "#fff0d3"],
-    ["#35689a", "#e5effb"],
-  ];
-  const elements: ExcalidrawElementSkeleton[] = [
-    {
-      type: "rectangle",
-      x,
-      y,
-      width: columns * nodeWidth + (columns - 1) * gapX,
-      height: titleHeight,
-      strokeColor: "#30294d",
-      backgroundColor: "#e9e1ff",
-      fillStyle: "solid",
-      roundness: { type: 3 },
-      label: { text: title, fontSize: 22 },
-    } as ExcalidrawElementSkeleton,
-  ];
-
-  positions.forEach((position, index) => {
-    const [strokeColor, backgroundColor] = palette[index % palette.length];
-    const stage = safeStages[index];
-    const detail = stage.description ? "\n" + stage.description : "";
-    elements.push({
-      type: "rectangle",
-      x: position.x,
-      y: position.y,
-      width: nodeWidth,
-      height: nodeHeight,
-      strokeColor,
-      backgroundColor,
-      fillStyle: "solid",
-      roundness: { type: 3 },
-      label: { text: String(index + 1).padStart(2, "0") + " · " + stage.name + detail, fontSize: detail ? 15 : 17 },
-    } as ExcalidrawElementSkeleton);
-  });
-
-  positions.slice(0, -1).forEach((from, index) => {
-    const to = positions[index + 1];
-    if (from.row === to.row) {
-      const forward = to.column > from.column;
-      elements.push({
-        type: "arrow",
-        x: forward ? from.x + nodeWidth : from.x,
-        y: from.y + nodeHeight / 2,
-        points: [
-          [0, 0],
-          [forward ? gapX : -gapX, 0],
-        ],
-        strokeColor: "#554a72",
-        strokeWidth: 2,
-        endArrowhead: "arrow",
-      } as ExcalidrawElementSkeleton);
-    } else {
-      elements.push({
-        type: "arrow",
-        x: from.x + nodeWidth / 2,
-        y: from.y + nodeHeight,
-        points: [
-          [0, 0],
-          [0, gapY],
-        ],
-        strokeColor: "#554a72",
-        strokeWidth: 2,
-        endArrowhead: "arrow",
-      } as ExcalidrawElementSkeleton);
-    }
-  });
-  return elements;
-}
-
 function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkeleton[] {
   const shape = stringValue(input.shape, "rectangle");
   const x = numeric(input.x, 330);
@@ -442,7 +220,7 @@ function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkelet
         type: "text",
         x,
         y,
-        text: text || "New idea",
+        text,
         width: Math.max(260, width),
         height: 34,
         fontSize: 22,
@@ -469,6 +247,7 @@ function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkelet
   }
 
   if (shape === "sticky") {
+    if (!text) return [];
     return [
       {
         type: "rectangle",
@@ -485,7 +264,7 @@ function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkelet
         type: "text",
         x: x + 20,
         y: y + 22,
-        text: text || "New note",
+        text,
         width: width - 40,
         height: 32,
         fontSize: 20,
@@ -510,126 +289,154 @@ function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkelet
   ];
 }
 
-function actionSkeletons(action: DrawingToolAction, input: Record<string, unknown>): ExcalidrawElementSkeleton[] {
-  const x = numeric(input.x, action === "user_journey" ? 280 : 420);
-  const y = numeric(input.y, action === "user_journey" ? 620 : 390);
-  const text = getInputText(input, action === "user_journey" ? "New journey" : "New idea");
+type CanvasComposition = {
+  skeletons: ExcalidrawElementSkeleton[];
+  engine: "webgpu" | "cpu";
+  nodeCount: number;
+  edgeCount: number;
+};
 
-  if (action === "sticky_note") {
-    return shapeSkeletons({
-      shape: "sticky",
-      x,
-      y,
-      width: numeric(input.width, 240),
-      height: numeric(input.height, 130),
-      text,
-    });
-  }
-
-  if (action === "highlight_area") {
-    return [
-      {
-        type: "rectangle",
-        x,
-        y,
-        width: Math.max(180, numeric(input.width, 420)),
-        height: Math.max(130, numeric(input.height, 190)),
-        strokeColor: "#d0643a",
-        backgroundColor: "#fff7f2",
-        fillStyle: "solid",
-        strokeStyle: "dashed",
-        strokeWidth: 3,
-        roundness: { type: 3 },
-      },
-      {
-        type: "text",
-        x: x + 18,
-        y: y + 18,
-        text,
-        width: Math.max(280, numeric(input.width, 420) - 36),
-        height: 30,
-        fontSize: 18,
-        strokeColor: "#a64e31",
-      },
-    ] as ExcalidrawElementSkeleton[];
-  }
-
-  if (action === "label_element") {
-    return [
-      {
-        type: "text",
-        x,
-        y,
-        text,
-        width: 380,
-        height: 34,
-        fontSize: 22,
-        strokeColor: "#315c91",
-      },
-    ];
-  }
-
-  const nodeWidth = 190;
-  const nodeHeight = 92;
-  const labels = [text, "Explore", "Commit"];
-  const colors = [
-    ["#4c3a80", "#f0ebff"],
-    ["#207f72", "#e7f7f2"],
-    ["#9f5b17", "#fff3da"],
+async function composeCanvasSkeletons(input: Record<string, unknown>): Promise<CanvasComposition> {
+  const layoutMode = stringValue(input.layout, "auto") as LayoutMode;
+  const layout = await computeGraphLayout({
+    nodes: input.nodes,
+    edges: input.edges,
+    mode: ["auto", "flow", "tree", "grid"].includes(layoutMode) ? layoutMode : "auto",
+    x: numeric(input.x, 72),
+    y: numeric(input.y, 112),
+  });
+  const palette = [
+    ["#5b3f8f", "#eee7ff"],
+    ["#167d72", "#dff5ed"],
+    ["#b86a22", "#fff0d3"],
+    ["#35689a", "#e5effb"],
   ];
   const elements: ExcalidrawElementSkeleton[] = [];
-  labels.forEach((label, index) => {
-    const nodeX = x + index * 260;
+  const title = stringValue(input.title);
+  if (title) {
+    const minX = Math.min(...layout.nodes.map((node) => node.x));
+    const maxX = Math.max(...layout.nodes.map((node) => node.x + node.width));
     elements.push({
       type: "rectangle",
-      x: nodeX,
-      y,
-      width: nodeWidth,
-      height: nodeHeight,
-      strokeColor: colors[index][0],
-      backgroundColor: colors[index][1],
+      x: minX,
+      y: Math.max(24, Math.min(...layout.nodes.map((node) => node.y)) - 76),
+      width: maxX - minX,
+      height: 56,
+      strokeColor: "#30294d",
+      backgroundColor: "#e9e1ff",
       fillStyle: "solid",
       roundness: { type: 3 },
-      label: { text: label, fontSize: 19 },
+      label: { text: title.slice(0, 180), fontSize: 21 },
     } as ExcalidrawElementSkeleton);
-    if (index < labels.length - 1) {
+  }
+
+  layout.nodes.forEach((node, index) => {
+    const [strokeColor, backgroundColor] = palette[index % palette.length];
+    const text = node.description ? node.label + "\n" + node.description : node.label;
+    elements.push({
+      type: "rectangle",
+      x: node.x,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      strokeColor,
+      backgroundColor,
+      fillStyle: "solid",
+      roundness: { type: 3 },
+      label: { text, fontSize: node.description ? 14 : 17 },
+    } as ExcalidrawElementSkeleton);
+  });
+
+  const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  layout.edges.forEach((edge: GraphEdgeInput) => {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || !target) return;
+    let startX = source.x + source.width / 2;
+    let startY = source.y + source.height;
+    let endX = target.x + target.width / 2;
+    let endY = target.y;
+    if (target.x > source.x + source.width / 2) {
+      startX = source.x + source.width;
+      startY = source.y + source.height / 2;
+      endX = target.x;
+      endY = target.y + target.height / 2;
+    } else if (target.y < source.y) {
+      startX = source.x;
+      startY = source.y + source.height / 2;
+      endX = target.x + target.width;
+      endY = target.y + target.height / 2;
+    }
+    elements.push({
+      type: "arrow",
+      x: startX,
+      y: startY,
+      points: [
+        [0, 0],
+        [endX - startX, endY - startY],
+      ],
+      strokeColor: "#554a72",
+      strokeWidth: 2,
+      endArrowhead: "arrow",
+    } as ExcalidrawElementSkeleton);
+    if (edge.label) {
       elements.push({
-        type: "arrow",
-        x: nodeX + nodeWidth,
-        y: y + nodeHeight / 2,
-        points: [
-          [0, 0],
-          [70, 0],
-        ],
-        strokeColor: "#6b5b95",
-        strokeWidth: 2,
-        endArrowhead: "arrow",
+        type: "text",
+        x: (startX + endX) / 2 - 30,
+        y: (startY + endY) / 2 - 16,
+        text: edge.label,
+        width: 120,
+        height: 24,
+        fontSize: 13,
+        strokeColor: "#554a72",
       } as ExcalidrawElementSkeleton);
     }
   });
-  return elements;
-}
-
-function initialToolForm(tool: DrawingTool | null): ToolFormState {
-  if (!tool) return EMPTY_TOOL_FORM;
-  return {
-    name: tool.name,
-    title: tool.title,
-    description: tool.description,
-    inputLabel: tool.inputLabel,
-    action: tool.action,
-  };
+  return { skeletons: elements, engine: layout.engine, nodeCount: layout.nodes.length, edgeCount: layout.edges.length };
 }
 
 function toolInputSchema(tool: DrawingTool): JsonSchema {
   return {
     type: "object",
     properties: {
-      input: { type: "string", description: tool.inputLabel },
-      x: { type: "number", description: "Canvas x coordinate." },
-      y: { type: "number", description: "Canvas y coordinate." },
+      title: { type: "string", description: "Optional canvas title." },
+      nodes: {
+        type: "array",
+        minItems: 1,
+        maxItems: 128,
+        description: tool.instruction,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            label: { type: "string" },
+            description: { type: "string" },
+            kind: { type: "string" },
+          },
+          required: ["id", "label"],
+          additionalProperties: false,
+        },
+      },
+      edges: {
+        type: "array",
+        maxItems: 256,
+        items: {
+          type: "object",
+          properties: {
+            source: { type: "string" },
+            target: { type: "string" },
+            label: { type: "string" },
+          },
+          required: ["source", "target"],
+          additionalProperties: false,
+        },
+      },
+      layout: { type: "string", enum: ["auto", "flow", "tree", "grid"] },
+      x: { type: "number" },
+      y: { type: "number" },
+      replace: { type: "boolean" },
     },
-    required: ["input"],
+    required: ["nodes"],
     additionalProperties: false,
   };
 }
@@ -650,8 +457,8 @@ function App() {
   const [studioOpen, setStudioOpen] = useState(false);
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
   const [toolForm, setToolForm] = useState<ToolFormState>(EMPTY_TOOL_FORM);
-  const [prompt, setPrompt] = useState("");
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("offline");
+  const [layoutEngine, setLayoutEngine] = useState<"webgpu" | "cpu" | "idle">("idle");
   const [agentCount, setAgentCount] = useState(0);
   const [bridgeOpen, setBridgeOpen] = useState(false);
   const [events, setEvents] = useState<AgentEvent[]>([
@@ -721,14 +528,12 @@ function App() {
 
       const name = makeToolName(stringValue(input.name, stringValue(input.title, "new drawing tool")));
       const title = stringValue(input.title, name.replace(/_/g, " "));
-      const action = stringValue(input.action, "sticky_note") as DrawingToolAction;
       const nextTool: DrawingTool = {
         id: existingId || makeId("tool"),
         name,
         title,
         description: stringValue(input.description, "A reusable tool for the shared canvas."),
-        inputLabel: stringValue(input.inputLabel, "What should the tool add?"),
-        action: ACTION_LABELS[action] ? action : "sticky_note",
+        instruction: stringValue(input.instruction, "Ask the agent to supply a graph for this capability."),
         createdAt: new Date().toISOString(),
       };
       setDrawingTools((current) => {
@@ -749,17 +554,25 @@ function App() {
   );
 
   const runCustomTool = useCallback(
-    (tool: DrawingTool, input: Record<string, unknown>) => {
-      const text = getInputText(input, tool.title);
-      const result = addToScene(
-        actionSkeletons(tool.action, { ...input, input: text }),
-        "agent",
-        "Ran " + tool.title,
-        "The agent used the shared " + ACTION_LABELS[tool.action].toLowerCase() + " action.",
-      );
-      return { ok: result.ok, tool: tool.name, added: result.added };
+    async (tool: DrawingTool, input: Record<string, unknown>) => {
+      try {
+        const composition = await composeCanvasSkeletons(input);
+        setLayoutEngine(composition.engine);
+        const result = addToScene(
+          composition.skeletons,
+          "agent",
+          "Agent ran " + tool.title,
+          composition.nodeCount + " nodes · " + composition.edgeCount + " relationships · " + composition.engine + " layout.",
+          input.replace === true,
+        );
+        return { ok: result.ok, tool: tool.name, added: result.added, layoutEngine: composition.engine };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "The custom composition could not be created.";
+        addEvent("system", "Custom composition rejected", detail);
+        return { ok: false, tool: tool.name, error: detail };
+      }
     },
-    [addToScene],
+    [addEvent, addToScene],
   );
 
   const executeRegisteredTool = useCallback(
@@ -785,6 +598,9 @@ function App() {
 
       if (toolName === "draw_shape") {
         const shape = stringValue(input.shape, "rectangle");
+        if ((shape === "text" || shape === "sticky") && !getInputText(input, "")) {
+          return { ok: false, shape, error: "Text and sticky shapes require text from the agent." };
+        }
         const result = addToScene(
           shapeSkeletons(input),
           "agent",
@@ -794,19 +610,29 @@ function App() {
         return { ok: result.ok, shape, added: result.added };
       }
 
-      if (toolName === "draw_process_flow") {
-        const stageCount = Array.isArray(input.stages) && input.stages.length >= 2
-          ? Math.min(input.stages.length, 16)
-          : DEFAULT_METAL_PAINT_STAGES.length;
-        const title = stringValue(input.title, "Process flow");
-        const result = addToScene(
-          processFlowSkeletons(input),
-          "agent",
-          "Agent drew a process flow",
-          title + " · " + stageCount + " editable stages on the shared canvas.",
-          input.replace === true,
-        );
-        return { ok: result.ok, title, stageCount, added: result.added };
+      if (toolName === "compose_canvas") {
+        try {
+          const composition = await composeCanvasSkeletons(input);
+          setLayoutEngine(composition.engine);
+          const result = addToScene(
+            composition.skeletons,
+            "agent",
+            "Agent composed the canvas",
+            composition.nodeCount + " nodes · " + composition.edgeCount + " relationships · " + composition.engine + " layout.",
+            input.replace === true,
+          );
+          return {
+            ok: result.ok,
+            added: result.added,
+            nodeCount: composition.nodeCount,
+            edgeCount: composition.edgeCount,
+            layoutEngine: composition.engine,
+          };
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : "The graph could not be composed.";
+          addEvent("system", "Composition rejected", detail);
+          return { ok: false, error: detail };
+        }
       }
 
       if (toolName === "create_drawing_tool") {
@@ -887,6 +713,7 @@ function App() {
         customTools: string[];
         textElements: Array<{ text: string; width: number; height: number }>;
         runtimeMode: RuntimeMode;
+        layoutEngine: "webgpu" | "cpu" | "idle";
         agentCount: number;
         agentProtocol: string;
         openStudio: () => void;
@@ -899,6 +726,7 @@ function App() {
         .filter((element) => element.type === "text")
         .map((element) => ({ text: element.text, width: element.width, height: element.height })),
       runtimeMode,
+      layoutEngine,
       agentCount,
       agentProtocol: DRAWAI_AGENT_PROTOCOL,
       openStudio: () => setStudioOpen(true),
@@ -906,101 +734,11 @@ function App() {
     return () => {
       delete debugWindow.__drawaiState;
     };
-  }, [agentCount, drawingTools, runtimeMode, sceneElements.length]);
-
-  const runPrompt = useCallback(
-    (value: string) => {
-      const request = value.trim();
-      if (!request) return;
-      const lower = request.toLowerCase();
-      setPrompt("");
-
-      const isMetalPaintFlow =
-        (lower.includes("envase") || lower.includes("container") || lower.includes("can")) &&
-        (lower.includes("pintura") || lower.includes("paint")) &&
-        (lower.includes("metal") || lower.includes("metálic"));
-      if (isMetalPaintFlow) {
-        const result = addToScene(
-          processFlowSkeletons({
-            title: "Envase metálico para pintura · proceso de fabricación",
-            stages: DEFAULT_METAL_PAINT_STAGES.map((name) => ({ name })),
-            x: 72,
-            y: 92,
-            replace: true,
-          }),
-          "agent",
-          "Agent drew the manufacturing flow",
-          DEFAULT_METAL_PAINT_STAGES.length + " editable stages added to the shared canvas.",
-          true,
-        );
-        addEvent("human", "Manufacturing request understood", result.ok ? "Complete editable flow added to the shared canvas." : "The canvas was not ready yet.");
-        return;
-      }
-
-      if (lower.includes("journey") || lower.includes("flow") || lower.includes("flujo")) {
-        const result = addToScene(
-          actionSkeletons("user_journey", { input: request, x: 260, y: 610 }),
-          "agent",
-          "Agent mapped a user journey",
-          "Three editable steps were added to the shared canvas.",
-        );
-        addEvent("human", "Prompt understood", result.ok ? "Flow added from your request." : "The canvas was not ready yet.");
-        return;
-      }
-
-      if (lower.includes("sticky") || lower.includes("note") || lower.includes("nota")) {
-        const result = addToScene(
-          shapeSkeletons({ shape: "sticky", input: request, x: 500, y: 610 }),
-          "agent",
-          "Agent added a sticky note",
-          "The note is editable with the regular Excalidraw tools.",
-        );
-        addEvent("human", "Prompt understood", result.ok ? "Sticky note added." : "The canvas was not ready yet.");
-        return;
-      }
-
-      if (lower.includes("clear") || lower.includes("delete") || lower.includes("borrar")) {
-        const api = apiRef.current;
-        const selected = selectedIds;
-        if (api && selected.length) {
-          api.updateScene({
-            elements: api
-              .getSceneElementsIncludingDeleted()
-              .map((element) => (selected.includes(element.id) ? { ...element, isDeleted: true } : element)),
-          });
-          addEvent("agent", "Selection cleared", selected.length + " selected element(s) removed.");
-        } else {
-          addEvent("agent", "Nothing selected", "Select an element first, then ask me to clear it.");
-        }
-        return;
-      }
-
-      if (lower.includes("tool") || lower.includes("herramienta")) {
-        setStudioOpen(true);
-        addEvent("agent", "Tool Studio opened", "Describe a reusable canvas action and we will make it together.");
-        return;
-      }
-
-      const result = addToScene(
-        shapeSkeletons({ shape: "text", input: request, x: 420, y: 610 }),
-        "agent",
-        "Agent captured an idea",
-        "I placed your request on the shared canvas as editable text.",
-      );
-      addEvent("human", "Prompt understood", result.ok ? "Idea added as a canvas label." : "The canvas was not ready yet.");
-    },
-    [addEvent, addToScene, selectedIds],
-  );
+  }, [agentCount, drawingTools, layoutEngine, runtimeMode, sceneElements.length]);
 
   const openNewTool = useCallback(() => {
     setEditingToolId(null);
     setToolForm(EMPTY_TOOL_FORM);
-    setStudioOpen(true);
-  }, []);
-
-  const editTool = useCallback((tool: DrawingTool) => {
-    setEditingToolId(tool.id);
-    setToolForm(initialToolForm(tool));
     setStudioOpen(true);
   }, []);
 
@@ -1017,13 +755,6 @@ function App() {
       setToolForm(EMPTY_TOOL_FORM);
     },
     [editingToolId, saveTool, toolForm],
-  );
-
-  const deleteTool = useCallback(
-    (tool: DrawingTool) => {
-      saveTool({ operation: "delete", id: tool.id });
-    },
-    [saveTool],
   );
 
   const runtimeLabel =
@@ -1089,9 +820,6 @@ function App() {
         <button type="button" onClick={() => setBridgeOpen(true)} aria-label="Open agent bridge" title="Agent bridge">
           <Cable size={17} />
         </button>
-        <button type="button" onClick={() => runPrompt("Haz un diagrama de flujo del proceso de fabricación de un envase metalico para pintura")} aria-label="Draw manufacturing flow" title="Manufacturing flow">
-          <GitBranch size={17} />
-        </button>
         <span className="rail-divider" />
         <span className="rail-index">01</span>
       </nav>
@@ -1104,172 +832,35 @@ function App() {
       )}
 
       {panelOpen && (
-        <aside className="drawai-panel" aria-label="DrawAI copilot">
-          <div className="panel-header">
+        <aside className="drawai-panel drawai-mini-panel" aria-label="DrawAI agent surface">
+          <div className="mini-panel-header">
             <div>
-              <div className="eyebrow">
-                <span className="eyebrow-mark">
-                  <Pencil size={12} />
-                </span>
-                DRAWING × WEBMCP
-              </div>
+              <span className="section-kicker">AGENT SURFACE</span>
               <h1>DrawAI</h1>
-              <p>Human + agent on one canvas.</p>
             </div>
-            <button className="icon-button" type="button" onClick={() => setPanelOpen(false)} aria-label="Close DrawAI copilot">
-              <X size={18} />
+            <button className="icon-button" type="button" onClick={() => setPanelOpen(false)} aria-label="Close DrawAI surface">
+              <X size={16} />
             </button>
           </div>
-
-          <div className={"runtime-status " + runtimeMode}>
+          <div className={"mini-status " + runtimeMode}>
             <span className="status-dot" />
             <span>{runtimeLabel}</span>
             <span className="runtime-count">{webmcpTools.length} tools</span>
           </div>
-
-          <section className="agent-bridge-card">
-            <div className="bridge-card-topline">
-              <span className="section-kicker">AGENT BRIDGE</span>
-              <Radio size={15} />
-            </div>
-            <div className="bridge-card-main">
-              <div>
-                <strong>{agentCount ? agentCount + " agent" + (agentCount === 1 ? "" : "s") + " connected" : "Listening for an agent"}</strong>
-                <span>{DRAWAI_AGENT_PROTOCOL} · BroadcastChannel + postMessage</span>
-              </div>
-              <button type="button" className="bridge-open-button" onClick={() => setBridgeOpen(true)}>Connect</button>
-            </div>
-          </section>
-
-          <section className="copilot-section">
-            <div className="section-heading">
-              <div>
-                <span className="section-kicker">COPILOT</span>
-                <h2>What should we draw?</h2>
-              </div>
-              <Bot size={20} className="section-icon" />
-            </div>
-            <p className="section-description">
-              Ask for a flow, a note, or a new reusable tool. The agent edits the same canvas you can edit.
-            </p>
-            <div className="prompt-box">
-              <textarea
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    runPrompt(prompt);
-                  }
-                }}
-                placeholder="e.g. Map the checkout journey"
-                aria-label="Agent prompt"
-                rows={3}
-              />
-              <button type="button" className="prompt-submit" onClick={() => runPrompt(prompt)} disabled={!prompt.trim()}>
-                <ArrowUpRight size={16} />
-              </button>
-            </div>
-            <div className="prompt-chips">
-              <button type="button" onClick={() => runPrompt("Haz un diagrama de flujo del proceso de fabricación de un envase metalico para pintura")}>
-                <GitBranch size={13} /> Metal paint flow
-              </button>
-              <button type="button" onClick={() => runPrompt("Map a user journey for onboarding")}>
-                <LayoutTemplate size={13} /> User journey
-              </button>
-              <button type="button" onClick={() => runPrompt("Add a sticky note about the next idea")}>
-                <Plus size={13} /> Sticky note
-              </button>
-              <button type="button" onClick={() => setStudioOpen(true)}>
-                <WandSparkles size={13} /> Make a tool
-              </button>
-            </div>
-          </section>
-
-          <section className="activity-section">
-            <div className="section-heading compact">
-              <div>
-                <span className="section-kicker">LIVE TRACE</span>
-                <h2>Activity</h2>
-              </div>
-              <Activity size={18} className="section-icon" />
-            </div>
-            <div className="activity-list">
-              {events.slice(0, 4).map((event) => (
-                <div className="activity-row" key={event.id}>
-                  <div className={"activity-avatar " + event.actor}>
-                    {event.actor === "agent" ? <Bot size={13} /> : event.actor === "human" ? <MousePointer2 size={13} /> : <CircleDashed size={13} />}
-                  </div>
-                  <div className="activity-copy">
-                    <strong>{event.label}</strong>
-                    <span>{event.detail}</span>
-                  </div>
-                  <time>{event.time}</time>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="tools-section">
-            <div className="section-heading compact">
-              <div>
-                <span className="section-kicker">LIVE REGISTRY</span>
-                <h2>Drawing tools</h2>
-              </div>
-              <button type="button" className="small-action" onClick={openNewTool}>
-                <Plus size={14} /> New
-              </button>
-            </div>
-            <div className="tool-list">
-              {BASE_TOOL_META.map((tool) => (
-                <div className="tool-row built-in" key={tool.name}>
-                  <div className="tool-icon"><Code2 size={15} /></div>
-                  <div className="tool-copy">
-                    <strong>{tool.name}</strong>
-                    <span>{tool.title}</span>
-                  </div>
-                  <span className="tool-pill">base</span>
-                </div>
-              ))}
-              {drawingTools.map((tool) => (
-                <div className="tool-row custom" key={tool.id}>
-                  <div className="tool-icon custom"><WandSparkles size={15} /></div>
-                  <div className="tool-copy">
-                    <strong>{tool.name}</strong>
-                    <span>{ACTION_LABELS[tool.action]}</span>
-                  </div>
-                  <div className="tool-actions">
-                    <button
-                      type="button"
-                      onClick={() => runCustomTool(tool, { input: "A new idea" })}
-                      aria-label={"Run " + tool.title}
-                      title={"Run " + tool.title}
-                    >
-                      <ArrowUpRight size={14} />
-                    </button>
-                    <button type="button" onClick={() => editTool(tool)} aria-label={"Edit " + tool.title} title="Edit tool">
-                      <Pencil size={13} />
-                    </button>
-                    <button type="button" onClick={() => deleteTool(tool)} aria-label={"Delete " + tool.title} title="Delete tool">
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {!drawingTools.length && (
-              <button className="empty-tool-card" type="button" onClick={openNewTool}>
-                <Sparkles size={16} />
-                <span><strong>Make the canvas yours.</strong> Create a tool with the agent.</span>
-                <ChevronDown size={14} />
-              </button>
-            )}
-          </section>
-
-          <footer className="panel-footer">
-            <span><Check size={13} /> Autosaved locally</span>
-            <span>{sceneElements.length} elements</span>
-          </footer>
+          <div className="mini-metrics">
+            <span><strong>{sceneElements.length}</strong> elements</span>
+            <span><strong>{agentCount}</strong> agents</span>
+            <span><strong>{drawingTools.length}</strong> custom</span>
+          </div>
+          <div className="mini-compute"><span className="compute-dot" /> client compute · {layoutEngine === "idle" ? "ready" : layoutEngine}</div>
+          <div className="mini-actions">
+            <button type="button" onClick={() => setBridgeOpen(true)}><Cable size={13} /> Bridge</button>
+            <button type="button" onClick={openNewTool}><Code2 size={13} /> New tool</button>
+          </div>
+          <div className="mini-event">
+            <Radio size={13} />
+            <span>{events[0]?.label || "Ready for an agent"}</span>
+          </div>
         </aside>
       )}
 
@@ -1316,31 +907,17 @@ function App() {
               />
             </label>
             <label>
-              Input prompt
+              Agent instruction
               <input
-                value={toolForm.inputLabel}
-                onChange={(event) => setToolForm((current) => ({ ...current, inputLabel: event.target.value }))}
-                placeholder="What should be highlighted?"
+                value={toolForm.instruction}
+                onChange={(event) => setToolForm((current) => ({ ...current, instruction: event.target.value }))}
+                placeholder="What should the agent compose?"
                 required
               />
             </label>
-            <label>
-              Canvas action
-              <span className="select-wrap">
-                <select
-                  value={toolForm.action}
-                  onChange={(event) => setToolForm((current) => ({ ...current, action: event.target.value as DrawingToolAction }))}
-                >
-                  {Object.entries(ACTION_LABELS).map(([value, label]) => (
-                    <option value={value} key={value}>{label}</option>
-                  ))}
-                </select>
-                <ChevronDown size={15} />
-              </span>
-            </label>
             <div className="schema-preview">
               <div><Code2 size={14} /> WebMCP schema</div>
-              <code>{"{ input: string, x?: number, y?: number }"}</code>
+              <code>{"{ nodes: Node[], edges?: Edge[], layout?: LayoutMode }"}</code>
             </div>
             <div className="studio-actions">
               <button type="button" className="secondary-button" onClick={() => setStudioOpen(false)}>Cancel</button>
@@ -1366,9 +943,9 @@ function App() {
             <div className="bridge-steps">
               <div><span>01</span><strong>Discover</strong><p>Listen on the <code>drawai-agent-v1</code> BroadcastChannel or send a same-origin <code>postMessage</code>.</p></div>
               <div><span>02</span><strong>Inspect</strong><p>Send <code>drawai:hello</code> or <code>drawai:list_tools</code> to receive the live registry.</p></div>
-              <div><span>03</span><strong>Compose</strong><p>Invoke <code>draw_process_flow</code> or any custom tool. The result lands in this editable scene.</p></div>
+              <div><span>03</span><strong>Compose</strong><p>Invoke <code>compose_canvas</code> with the graph the agent has reasoned about. DrawAI only validates and lays it out locally.</p></div>
             </div>
-            <pre className="bridge-code"><code>{'const agent = window.__drawaiAgent;\nawait agent.connect("my-agent");\nawait agent.invoke("draw_process_flow", {\n  title: "Metal paint container",\n  stages: [{ name: "Cut sheet" }, { name: "Form body" }, { name: "Coat and cure" }]\n});'}</code></pre>
+            <pre className="bridge-code"><code>{'const agent = window.__drawaiAgent;\nawait agent.connect("my-agent");\nawait agent.invoke("compose_canvas", {\n  title: "Agent-provided canvas",\n  nodes: [{ id: "a", label: "First idea" }, { id: "b", label: "Next idea" }],\n  edges: [{ source: "a", target: "b" }]\n});'}</code></pre>
             <div className="bridge-dialog-footer">
               <span><span className="bridge-live-dot" /> {agentCount} connected in this tab</span>
               <button type="button" className="primary-button" onClick={() => window.__drawaiAgent?.connect("studio-preview")}>
