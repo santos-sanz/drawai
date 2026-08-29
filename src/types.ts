@@ -1,36 +1,19 @@
-export type TaskStatus = "open" | "done";
+export type DrawingToolAction = "sticky_note" | "user_journey" | "highlight_area" | "label_element";
 
-export type CustomAction = "add_task" | "complete_task" | "add_note" | "set_focus";
-
-export interface Task {
-  id: string;
-  title: string;
-  status: TaskStatus;
-  createdAt: string;
-}
-
-export interface CustomTool {
+export interface DrawingTool {
   id: string;
   name: string;
   title: string;
   description: string;
   inputLabel: string;
-  action: CustomAction;
+  action: DrawingToolAction;
   createdAt: string;
-  updatedAt: string;
 }
 
-export interface WorkspaceState {
-  tasks: Task[];
-  notes: string[];
-  focus: string;
-  customTools: CustomTool[];
-}
-
-export interface ActivityEvent {
+export interface AgentEvent {
   id: string;
-  time: string;
   label: string;
   detail: string;
-  tone: "mint" | "amber" | "violet" | "muted";
+  time: string;
+  actor: "agent" | "human" | "system";
 }

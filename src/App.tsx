@@ -1,482 +1,1089 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
+import type { ExcalidrawElementSkeleton } from "@excalidraw/excalidraw/data/transform";
+import type { ExcalidrawImperativeAPI, AppState } from "@excalidraw/excalidraw/types";
+import type {
+  NonDeletedExcalidrawElement,
+  OrderedExcalidrawElement,
+} from "@excalidraw/excalidraw/element/types";
 import {
+  Activity,
   ArrowUpRight,
   Bot,
   Check,
-  ChevronRight,
-  CircleDot,
+  ChevronDown,
+  CircleDashed,
   Code2,
-  Command,
-  Edit3,
-  Layers3,
-  Lightbulb,
-  ListPlus,
-  MessageSquareText,
+  Eraser,
+  LayoutTemplate,
+  MousePointer2,
+  Pencil,
   Plus,
-  Radio,
-  RefreshCw,
-  Settings2,
+  RotateCcw,
   Sparkles,
-  TerminalSquare,
   Trash2,
   WandSparkles,
   X,
-  Zap,
 } from "lucide-react";
-import { makeToolName, registerToolSurface, type JsonSchema, type RuntimeMode, type WebMCPToolDefinition } from "./runtime";
-import type { ActivityEvent, CustomAction, CustomTool, Task, WorkspaceState } from "./types";
+import "@excalidraw/excalidraw/index.css";
+import {
+  makeToolName,
+  registerToolSurface,
+  type JsonSchema,
+  type RuntimeMode,
+  type WebMCPToolDefinition,
+} from "./runtime";
+import type { AgentEvent, DrawingTool, DrawingToolAction } from "./types";
 
-const STORAGE_KEY = "escalero-workspace-v1";
+const SCENE_KEY = "drawai-scene-v1";
+const TOOLS_KEY = "drawai-tools-v1";
 
-const starterState: WorkspaceState = {
-  tasks: [
-    { id: "task_1", title: "Shape the smallest useful workflow", status: "done", createdAt: "2026-08-29T12:00:00.000Z" },
-    { id: "task_2", title: "Expose the first three capabilities", status: "open", createdAt: "2026-08-29T12:03:00.000Z" },
-    { id: "task_3", title: "Design a tool for the next real need", status: "open", createdAt: "2026-08-29T12:05:00.000Z" },
-  ],
-  notes: ["Start with intent, then grow the interface."],
-  focus: "Make the next step obvious",
-  customTools: [],
-};
-
-const actionLabels: Record<CustomAction, string> = {
-  add_task: "Add a task",
-  complete_task: "Complete the first open task",
-  add_note: "Capture a note",
-  set_focus: "Set the workspace focus",
-};
-
-const actionDescriptions: Record<CustomAction, string> = {
-  add_task: "Creates a new item in the shared workspace.",
-  complete_task: "Closes the first open item in the shared workspace.",
-  add_note: "Adds a short note to the shared workspace memory.",
-  set_focus: "Changes the current focus shown to humans and agents.",
-};
-
-const baseTools: WebMCPToolDefinition[] = [
+const INITIAL_SKELETONS = [
   {
-    name: "get_workspace_snapshot",
-    title: "Read the workspace",
-    description: "Read the current Escalero workspace, including open tasks, focus, notes, and the capabilities available to this agent.",
+    type: "rectangle",
+    x: 140,
+    y: 190,
+    width: 240,
+    height: 118,
+    strokeColor: "#4c3a80",
+    backgroundColor: "#f0ebff",
+    fillStyle: "solid",
+    roundness: { type: 3 },
+    label: { text: "DrawAI", fontSize: 24 },
+  },
+  {
+    type: "rectangle",
+    x: 420,
+    y: 190,
+    width: 240,
+    height: 118,
+    strokeColor: "#207f72",
+    backgroundColor: "#e7f7f2",
+    fillStyle: "solid",
+    roundness: { type: 3 },
+    label: { text: "Human intent", fontSize: 22 },
+  },
+  {
+    type: "rectangle",
+    x: 700,
+    y: 190,
+    width: 240,
+    height: 118,
+    strokeColor: "#9f5b17",
+    backgroundColor: "#fff3da",
+    fillStyle: "solid",
+    roundness: { type: 3 },
+    label: { text: "Agent action", fontSize: 22 },
+  },
+  {
+    type: "rectangle",
+    x: 420,
+    y: 435,
+    width: 240,
+    height: 118,
+    strokeColor: "#315c91",
+    backgroundColor: "#e9f1ff",
+    fillStyle: "solid",
+    roundness: { type: 3 },
+    label: { text: "Shared canvas", fontSize: 22 },
+  },
+  {
+    type: "arrow",
+    x: 380,
+    y: 249,
+    points: [
+      [0, 0],
+      [40, 0],
+    ],
+    strokeColor: "#6b5b95",
+    strokeWidth: 2,
+    endArrowhead: "arrow",
+  },
+  {
+    type: "arrow",
+    x: 660,
+    y: 249,
+    points: [
+      [0, 0],
+      [40, 0],
+    ],
+    strokeColor: "#6b5b95",
+    strokeWidth: 2,
+    endArrowhead: "arrow",
+  },
+  {
+    type: "arrow",
+    x: 540,
+    y: 308,
+    points: [
+      [0, 0],
+      [0, 127],
+    ],
+    strokeColor: "#6b5b95",
+    strokeWidth: 2,
+    endArrowhead: "arrow",
+  },
+  {
+    type: "text",
+    x: 175,
+    y: 370,
+    text: "Build on the canvas together.",
+    fontSize: 20,
+    strokeColor: "#5f6368",
+  },
+] as ExcalidrawElementSkeleton[];
+
+const INITIAL_ELEMENTS = convertToExcalidrawElements(INITIAL_SKELETONS, {
+  regenerateIds: true,
+});
+
+const BASE_TOOL_META: Array<
+  Pick<WebMCPToolDefinition, "name" | "title" | "description" | "inputSchema" | "annotations">
+> = [
+  {
+    name: "get_canvas_snapshot",
+    title: "Inspect canvas",
+    description:
+      "Read the current shared drawing as a compact snapshot with element counts, text, and selected elements.",
     inputSchema: {
       type: "object",
-      properties: { includeNotes: { type: "boolean", description: "Include workspace notes in the snapshot." } },
+      properties: {},
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true },
-    execute: async () => null,
   },
   {
-    name: "apply_task_change",
-    title: "Change a task",
-    description: "Add, complete, or rename a task in the shared Escalero workspace. Use the exact operation and task ID when supplied.",
+    name: "draw_shape",
+    title: "Draw a shape",
+    description:
+      "Add a typed shape to the shared canvas. Use this for rectangles, ellipses, diamonds, arrows, lines, text, or sticky notes.",
     inputSchema: {
       type: "object",
       properties: {
-        operation: { type: "string", enum: ["add", "complete", "rename"], description: "The task change to apply." },
-        taskId: { type: "string", description: "The task ID for complete or rename." },
-        title: { type: "string", description: "The task text for add or rename." },
+        shape: {
+          type: "string",
+          enum: ["rectangle", "ellipse", "diamond", "arrow", "line", "text", "sticky"],
+          description: "The Excalidraw shape to add.",
+        },
+        text: { type: "string", description: "Optional label or text content." },
+        x: { type: "number", description: "Canvas x coordinate." },
+        y: { type: "number", description: "Canvas y coordinate." },
+        width: { type: "number", description: "Shape width." },
+        height: { type: "number", description: "Shape height." },
+        color: { type: "string", description: "Optional stroke color in hex format." },
+      },
+      required: ["shape"],
+      additionalProperties: false,
+    },
+    annotations: { untrustedContentHint: true },
+  },
+  {
+    name: "create_drawing_tool",
+    title: "Create a drawing tool",
+    description:
+      "Create, update, or delete a reusable drawing tool. New tools become available to both the agent and the human.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: { type: "string", enum: ["create", "update", "delete"] },
+        id: { type: "string", description: "Existing tool id for update or delete." },
+        name: { type: "string", description: "Tool name, normalized to snake_case." },
+        title: { type: "string", description: "Human-readable tool title." },
+        description: { type: "string", description: "What the tool does." },
+        inputLabel: { type: "string", description: "What input the tool asks for." },
+        action: {
+          type: "string",
+          enum: ["sticky_note", "user_journey", "highlight_area", "label_element"],
+        },
       },
       required: ["operation"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, untrustedContentHint: true },
-    execute: async () => null,
-  },
-  {
-    name: "design_tool",
-    title: "Design a new capability",
-    description: "Create, update, or remove a custom Escalero tool. Start small: give it a clear name, one input, and one safe workspace action.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        operation: { type: "string", enum: ["create", "update", "delete"], description: "How to change the tool registry." },
-        name: { type: "string", description: "Stable snake_case name for the custom tool." },
-        title: { type: "string", description: "Human-readable title for the tool." },
-        description: { type: "string", description: "When an agent should use the tool." },
-        inputLabel: { type: "string", description: "What the tool's single text input means." },
-        action: { type: "string", enum: ["add_task", "complete_task", "add_note", "set_focus"], description: "The safe workspace action behind the tool." },
-      },
-      required: ["operation"],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: false, untrustedContentHint: true },
-    execute: async () => null,
+    annotations: { untrustedContentHint: true },
   },
 ];
 
-function readStoredState(): WorkspaceState {
+const ACTION_LABELS: Record<DrawingToolAction, string> = {
+  sticky_note: "Sticky note",
+  user_journey: "User journey",
+  highlight_area: "Highlight area",
+  label_element: "Label element",
+};
+
+type ToolFormState = {
+  name: string;
+  title: string;
+  description: string;
+  inputLabel: string;
+  action: DrawingToolAction;
+};
+
+const EMPTY_TOOL_FORM: ToolFormState = {
+  name: "",
+  title: "",
+  description: "",
+  inputLabel: "What should the tool add?",
+  action: "sticky_note",
+};
+
+function makeId(prefix: string): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return prefix + "-" + crypto.randomUUID();
+  }
+  return prefix + "-" + Math.random().toString(36).slice(2);
+}
+
+function clockTime(): string {
+  return new Intl.DateTimeFormat("en", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date());
+}
+
+function loadScene(): OrderedExcalidrawElement[] {
   try {
-    const value = localStorage.getItem(STORAGE_KEY);
-    if (!value) return starterState;
-    const parsed = JSON.parse(value) as Partial<WorkspaceState>;
-    return {
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : starterState.tasks,
-      notes: Array.isArray(parsed.notes) ? parsed.notes : starterState.notes,
-      focus: typeof parsed.focus === "string" ? parsed.focus : starterState.focus,
-      customTools: Array.isArray(parsed.customTools) ? parsed.customTools : [],
-    };
+    const stored = localStorage.getItem(SCENE_KEY);
+    if (!stored) return INITIAL_ELEMENTS;
+    const parsed = JSON.parse(stored) as { elements?: OrderedExcalidrawElement[] };
+    return Array.isArray(parsed.elements) ? parsed.elements : INITIAL_ELEMENTS;
   } catch {
-    return starterState;
+    return INITIAL_ELEMENTS;
   }
 }
 
-function timestamp(): string {
-  return new Date().toISOString();
+function loadDrawingTools(): DrawingTool[] {
+  try {
+    const stored = localStorage.getItem(TOOLS_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored) as DrawingTool[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
-function timeLabel(iso: string): string {
-  return new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+function numeric(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function toolIcon(name: string) {
-  if (name.includes("workspace")) return <Layers3 size={16} />;
-  if (name.includes("task")) return <ListPlus size={16} />;
-  if (name.includes("design")) return <WandSparkles size={16} />;
-  return <Zap size={16} />;
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function customSchema(tool: CustomTool): JsonSchema {
+function getInputText(input: Record<string, unknown>, fallback: string): string {
+  return stringValue(input.text ?? input.input ?? input.label ?? input.title, fallback);
+}
+
+function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkeleton[] {
+  const shape = stringValue(input.shape, "rectangle");
+  const x = numeric(input.x, 330);
+  const y = numeric(input.y, 230);
+  const width = Math.max(80, numeric(input.width, 220));
+  const height = Math.max(56, numeric(input.height, 120));
+  const color = stringValue(input.color, "#4c3a80");
+  const text = getInputText(input, "");
+
+  if (shape === "text") {
+    return [
+      {
+        type: "text",
+        x,
+        y,
+        text: text || "New idea",
+        fontSize: 22,
+        strokeColor: color,
+      },
+    ];
+  }
+
+  if (shape === "arrow" || shape === "line") {
+    return [
+      {
+        type: shape,
+        x,
+        y,
+        points: [
+          [0, 0],
+          [Math.max(120, width), 0],
+        ],
+        strokeColor: color,
+        strokeWidth: 2,
+        ...(shape === "arrow" ? { endArrowhead: "arrow" } : {}),
+      } as ExcalidrawElementSkeleton,
+    ];
+  }
+
+  if (shape === "sticky") {
+    return [
+      {
+        type: "rectangle",
+        x,
+        y,
+        width,
+        height,
+        strokeColor: "#a36a16",
+        backgroundColor: "#fff3bf",
+        fillStyle: "solid",
+        roundness: { type: 3 },
+      },
+      {
+        type: "text",
+        x: x + 20,
+        y: y + 22,
+        text: text || "New note",
+        fontSize: 20,
+        strokeColor: "#5e481e",
+      },
+    ] as ExcalidrawElementSkeleton[];
+  }
+
+  return [
+    {
+      type: shape as "rectangle" | "ellipse" | "diamond",
+      x,
+      y,
+      width,
+      height,
+      strokeColor: color,
+      backgroundColor: "#ffffff",
+      fillStyle: "solid",
+      roundness: { type: 3 },
+      ...(text ? { label: { text, fontSize: 20 } } : {}),
+    } as ExcalidrawElementSkeleton,
+  ];
+}
+
+function actionSkeletons(action: DrawingToolAction, input: Record<string, unknown>): ExcalidrawElementSkeleton[] {
+  const x = numeric(input.x, action === "user_journey" ? 280 : 420);
+  const y = numeric(input.y, action === "user_journey" ? 620 : 390);
+  const text = getInputText(input, action === "user_journey" ? "New journey" : "New idea");
+
+  if (action === "sticky_note") {
+    return shapeSkeletons({
+      shape: "sticky",
+      x,
+      y,
+      width: numeric(input.width, 240),
+      height: numeric(input.height, 130),
+      text,
+    });
+  }
+
+  if (action === "highlight_area") {
+    return [
+      {
+        type: "rectangle",
+        x,
+        y,
+        width: Math.max(180, numeric(input.width, 420)),
+        height: Math.max(130, numeric(input.height, 190)),
+        strokeColor: "#d0643a",
+        backgroundColor: "#fff7f2",
+        fillStyle: "solid",
+        strokeStyle: "dashed",
+        strokeWidth: 3,
+        roundness: { type: 3 },
+      },
+      {
+        type: "text",
+        x: x + 18,
+        y: y + 18,
+        text,
+        fontSize: 18,
+        strokeColor: "#a64e31",
+      },
+    ] as ExcalidrawElementSkeleton[];
+  }
+
+  if (action === "label_element") {
+    return [
+      {
+        type: "text",
+        x,
+        y,
+        text,
+        fontSize: 22,
+        strokeColor: "#315c91",
+      },
+    ];
+  }
+
+  const nodeWidth = 190;
+  const nodeHeight = 92;
+  const labels = [text, "Explore", "Commit"];
+  const colors = [
+    ["#4c3a80", "#f0ebff"],
+    ["#207f72", "#e7f7f2"],
+    ["#9f5b17", "#fff3da"],
+  ];
+  const elements: ExcalidrawElementSkeleton[] = [];
+  labels.forEach((label, index) => {
+    const nodeX = x + index * 260;
+    elements.push({
+      type: "rectangle",
+      x: nodeX,
+      y,
+      width: nodeWidth,
+      height: nodeHeight,
+      strokeColor: colors[index][0],
+      backgroundColor: colors[index][1],
+      fillStyle: "solid",
+      roundness: { type: 3 },
+      label: { text: label, fontSize: 19 },
+    } as ExcalidrawElementSkeleton);
+    if (index < labels.length - 1) {
+      elements.push({
+        type: "arrow",
+        x: nodeX + nodeWidth,
+        y: y + nodeHeight / 2,
+        points: [
+          [0, 0],
+          [70, 0],
+        ],
+        strokeColor: "#6b5b95",
+        strokeWidth: 2,
+        endArrowhead: "arrow",
+      } as ExcalidrawElementSkeleton);
+    }
+  });
+  return elements;
+}
+
+function initialToolForm(tool: DrawingTool | null): ToolFormState {
+  if (!tool) return EMPTY_TOOL_FORM;
+  return {
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    inputLabel: tool.inputLabel,
+    action: tool.action,
+  };
+}
+
+function toolInputSchema(tool: DrawingTool): JsonSchema {
   return {
     type: "object",
-    properties: { input: { type: "string", description: tool.inputLabel } },
+    properties: {
+      input: { type: "string", description: tool.inputLabel },
+      x: { type: "number", description: "Canvas x coordinate." },
+      y: { type: "number", description: "Canvas y coordinate." },
+    },
     required: ["input"],
     additionalProperties: false,
   };
 }
 
 function App() {
-  const [state, setState] = useState<WorkspaceState>(readStoredState);
-  const stateRef = useRef(state);
-  const [events, setEvents] = useState<ActivityEvent[]>([
-    { id: "event_1", time: "2026-08-29T12:08:00.000Z", label: "Surface initialized", detail: "3 base capabilities are ready for an agent.", tone: "mint" },
-    { id: "event_2", time: "2026-08-29T12:08:10.000Z", label: "Human + agent mode", detail: "Both sides read and change the same workspace.", tone: "violet" },
-  ]);
-  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("offline");
+  const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const initialElementsRef = useRef<OrderedExcalidrawElement[]>(loadScene());
+  const sceneElementsRef = useRef<readonly OrderedExcalidrawElement[]>(initialElementsRef.current);
+  const selectedIdsRef = useRef<string[]>([]);
+  const [sceneElements, setSceneElements] = useState<readonly OrderedExcalidrawElement[]>(
+    initialElementsRef.current,
+  );
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [drawingTools, setDrawingTools] = useState<DrawingTool[]>(loadDrawingTools);
+  const drawingToolsRef = useRef(drawingTools);
+  const [panelOpen, setPanelOpen] = useState(true);
   const [studioOpen, setStudioOpen] = useState(false);
-  const [editingTool, setEditingTool] = useState<CustomTool | null>(null);
-  const [agentPrompt, setAgentPrompt] = useState("");
-  const [agentReply, setAgentReply] = useState("Waiting for an intent…");
-  const [toast, setToast] = useState<string | null>(null);
-  const [showInspector, setShowInspector] = useState(false);
-
-  stateRef.current = state;
+  const [editingToolId, setEditingToolId] = useState<string | null>(null);
+  const [toolForm, setToolForm] = useState<ToolFormState>(EMPTY_TOOL_FORM);
+  const [prompt, setPrompt] = useState("");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("offline");
+  const [events, setEvents] = useState<AgentEvent[]>([
+    {
+      id: makeId("event"),
+      actor: "system",
+      label: "Canvas ready",
+      detail: "Human and agent actions share the same Excalidraw scene.",
+      time: clockTime(),
+    },
+  ]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+    drawingToolsRef.current = drawingTools;
+    localStorage.setItem(TOOLS_KEY, JSON.stringify(drawingTools));
+  }, [drawingTools]);
 
-  const addEvent = (label: string, detail: string, tone: ActivityEvent["tone"] = "muted") => {
+  const addEvent = useCallback((actor: AgentEvent["actor"], label: string, detail: string) => {
     setEvents((current) => [
-      { id: String(Date.now()) + "_" + Math.random(), time: timestamp(), label, detail, tone },
+      {
+        id: makeId("event"),
+        actor,
+        label,
+        detail,
+        time: clockTime(),
+      },
       ...current,
-    ].slice(0, 7));
-  };
+    ].slice(0, 8));
+  }, []);
 
-  const addToast = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 2400);
-  };
+  const handleChange = useCallback((elements: readonly OrderedExcalidrawElement[], appState: AppState) => {
+    sceneElementsRef.current = elements;
+    selectedIdsRef.current = Object.keys(appState.selectedElementIds || {});
+    setSceneElements(elements);
+    setSelectedIds(selectedIdsRef.current);
+    localStorage.setItem(SCENE_KEY, JSON.stringify({ elements }));
+  }, []);
 
-  const perform = async (name: string, input: Record<string, unknown>): Promise<unknown> => {
-    const current = stateRef.current;
-
-    if (name === "get_workspace_snapshot") {
-      addEvent("Agent read the workspace", "Returned live tasks, focus, notes, and tool count.", "mint");
-      return {
-        focus: current.focus,
-        openTasks: current.tasks.filter((task) => task.status === "open"),
-        completedTasks: current.tasks.filter((task) => task.status === "done"),
-        notes: input.includeNotes === false ? [] : current.notes,
-        capabilities: baseTools.map((tool) => tool.name).concat(current.customTools.map((tool) => tool.name)),
-      };
-    }
-
-    if (name === "apply_task_change") {
-      const operation = input.operation;
-      const title = typeof input.title === "string" ? input.title.trim() : "";
-      const taskId = typeof input.taskId === "string" ? input.taskId : "";
-      if (operation === "add" && title) {
-        const task: Task = { id: "task_" + Date.now(), title, status: "open", createdAt: timestamp() };
-        setState((previous) => ({ ...previous, tasks: [...previous.tasks, task] }));
-        addEvent("Agent added a task", "“" + title + "” joined the shared workspace.", "amber");
-        addToast("Task added by the agent");
-        return { ok: true, task };
+  const addToScene = useCallback(
+    (skeletons: ExcalidrawElementSkeleton[], actor: AgentEvent["actor"], label: string, detail: string) => {
+      const api = apiRef.current;
+      if (!api || skeletons.length === 0) {
+        addEvent("system", "Canvas is still loading", "Try again when the editor is visible.");
+        return { ok: false, added: 0 };
       }
-      if (operation === "complete") {
-        const target = current.tasks.find((task) => task.id === taskId) ?? current.tasks.find((task) => task.status === "open");
-        if (!target) return { ok: false, error: "No open task was found." };
-        setState((previous) => ({ ...previous, tasks: previous.tasks.map((task) => task.id === target.id ? { ...task, status: "done" } : task) }));
-        addEvent("Agent completed a task", "“" + target.title + "” is now done.", "mint");
-        addToast("Task completed");
-        return { ok: true, taskId: target.id };
-      }
-      if (operation === "rename" && taskId && title) {
-        setState((previous) => ({ ...previous, tasks: previous.tasks.map((task) => task.id === taskId ? { ...task, title } : task) }));
-        addEvent("Agent renamed a task", "Task " + taskId + " has a clearer intent.", "amber");
-        return { ok: true, taskId, title };
-      }
-      return { ok: false, error: "Use add with title, or complete/rename with a taskId." };
-    }
+      const created = convertToExcalidrawElements(skeletons, { regenerateIds: true });
+      const nextElements = [...api.getSceneElements(), ...created];
+      api.updateScene({ elements: nextElements });
+      sceneElementsRef.current = nextElements;
+      setSceneElements(nextElements);
+      addEvent(actor, label, detail);
+      return { ok: true, added: created.length };
+    },
+    [addEvent],
+  );
 
-    if (name === "design_tool") {
-      const operation = input.operation;
-      const rawName = typeof input.name === "string" ? input.name : "";
-      const normalizedName = makeToolName(rawName);
+  const saveTool = useCallback(
+    (input: Record<string, unknown>) => {
+      const operation = stringValue(input.operation, "create");
+      const existingId = stringValue(input.id);
       if (operation === "delete") {
-        const target = current.customTools.find((tool) => tool.name === normalizedName || tool.id === rawName);
-        if (!target) return { ok: false, error: "Custom tool not found." };
-        setState((previous) => ({ ...previous, customTools: previous.customTools.filter((tool) => tool.id !== target.id) }));
-        addEvent("Capability removed", target.title + " left the live surface.", "violet");
-        addToast("Capability removed");
-        return { ok: true, removed: target.name };
+        const exists = drawingToolsRef.current.some((tool) => tool.id === existingId);
+        setDrawingTools((current) => current.filter((tool) => tool.id !== existingId));
+        addEvent("agent", "Drawing tool removed", existingId ? "The shared registry was updated." : "No tool id was provided.");
+        return { ok: exists, operation, id: existingId };
       }
-      const action = (input.action as CustomAction) || "add_note";
-      const title = typeof input.title === "string" && input.title.trim() ? input.title.trim() : normalizedName.replaceAll("_", " ");
-      const description = typeof input.description === "string" && input.description.trim() ? input.description.trim() : actionDescriptions[action];
-      const inputLabel = typeof input.inputLabel === "string" && input.inputLabel.trim() ? input.inputLabel.trim() : "The short instruction to apply";
-      const existing = current.customTools.find((tool) => tool.name === normalizedName || tool.id === rawName);
-      if (operation === "update" && existing) {
-        const updated: CustomTool = { ...existing, name: normalizedName || existing.name, title, description, inputLabel, action, updatedAt: timestamp() };
-        setState((previous) => ({ ...previous, customTools: previous.customTools.map((tool) => tool.id === existing.id ? updated : tool) }));
-        addEvent("Capability refined", updated.title + " now exposes an updated schema.", "violet");
-        addToast("Capability updated");
-        return { ok: true, tool: updated };
-      }
-      if (operation === "create") {
-        if (existing || baseTools.some((tool) => tool.name === normalizedName)) return { ok: false, error: "That tool name is already in use." };
-        const now = timestamp();
-        const created: CustomTool = { id: "custom_" + Date.now(), name: normalizedName, title, description, inputLabel, action, createdAt: now, updatedAt: now };
-        setState((previous) => ({ ...previous, customTools: [...previous.customTools, created] }));
-        addEvent("New capability designed", created.title + " is entering the live surface.", "violet");
-        addToast("New capability added");
-        return { ok: true, tool: created };
-      }
-      return { ok: false, error: "Use create for a new tool or update with an existing name." };
-    }
 
-    const custom = current.customTools.find((tool) => tool.name === name);
-    if (!custom) return { ok: false, error: "Unknown capability: " + name };
-    const value = typeof input.input === "string" ? input.input.trim() : "";
-    if (custom.action === "add_task" && value) return perform("apply_task_change", { operation: "add", title: value });
-    if (custom.action === "complete_task") return perform("apply_task_change", { operation: "complete" });
-    if (custom.action === "add_note" && value) {
-      setState((previous) => ({ ...previous, notes: [value, ...previous.notes].slice(0, 8) }));
-      addEvent("Custom capability invoked", custom.title + " captured a note.", "violet");
-      addToast("Note captured");
-      return { ok: true, note: value };
-    }
-    if (custom.action === "set_focus" && value) {
-      setState((previous) => ({ ...previous, focus: value }));
-      addEvent("Custom capability invoked", custom.title + " changed the shared focus.", "violet");
-      addToast("Focus updated");
-      return { ok: true, focus: value };
-    }
-    return { ok: false, error: "This capability needs a short text input." };
-  };
+      const name = makeToolName(stringValue(input.name, stringValue(input.title, "new drawing tool")));
+      const title = stringValue(input.title, name.replace(/_/g, " "));
+      const action = stringValue(input.action, "sticky_note") as DrawingToolAction;
+      const nextTool: DrawingTool = {
+        id: existingId || makeId("tool"),
+        name,
+        title,
+        description: stringValue(input.description, "A reusable tool for the shared canvas."),
+        inputLabel: stringValue(input.inputLabel, "What should the tool add?"),
+        action: ACTION_LABELS[action] ? action : "sticky_note",
+        createdAt: new Date().toISOString(),
+      };
+      setDrawingTools((current) => {
+        const index = current.findIndex((tool) => tool.id === nextTool.id || tool.name === nextTool.name);
+        if (index === -1) return [...current, nextTool];
+        const copy = [...current];
+        copy[index] = { ...copy[index], ...nextTool };
+        return copy;
+      });
+      addEvent(
+        "agent",
+        operation === "update" ? "Drawing tool updated" : "New drawing tool created",
+        nextTool.title + " is now available to both sides.",
+      );
+      return { ok: true, operation, tool: nextTool };
+    },
+    [addEvent],
+  );
 
-  const customDefinitions = useMemo<WebMCPToolDefinition[]>(() => state.customTools.map((tool) => ({
-    name: tool.name,
-    title: tool.title,
-    description: tool.description,
-    inputSchema: customSchema(tool),
-    annotations: { readOnlyHint: false, untrustedContentHint: true },
-    execute: async () => null,
-  })), [state.customTools]);
+  const runCustomTool = useCallback(
+    (tool: DrawingTool, input: Record<string, unknown>) => {
+      const text = getInputText(input, tool.title);
+      const result = addToScene(
+        actionSkeletons(tool.action, { ...input, input: text }),
+        "agent",
+        "Ran " + tool.title,
+        "The agent used the shared " + ACTION_LABELS[tool.action].toLowerCase() + " action.",
+      );
+      return { ok: result.ok, tool: tool.name, added: result.added };
+    },
+    [addToScene],
+  );
+
+  const executeRegisteredTool = useCallback(
+    async (rawInput: Record<string, unknown>) => {
+      const input = { ...rawInput };
+      const toolName = stringValue(input.__toolName);
+      delete input.__toolName;
+
+      if (toolName === "get_canvas_snapshot") {
+        const textElements = sceneElementsRef.current.filter((element) => element.type === "text");
+        return {
+          ok: true,
+          elementCount: sceneElementsRef.current.length,
+          textCount: textElements.length,
+          selectedElementCount: selectedIdsRef.current.length,
+          text: textElements
+            .map((element) => ("text" in element ? element.text : ""))
+            .filter(Boolean)
+            .slice(-24),
+          customTools: drawingToolsRef.current.map((tool) => tool.name),
+        };
+      }
+
+      if (toolName === "draw_shape") {
+        const shape = stringValue(input.shape, "rectangle");
+        const result = addToScene(
+          shapeSkeletons(input),
+          "agent",
+          "Agent drew a " + shape,
+          "The new element is part of the same editable canvas.",
+        );
+        return { ok: result.ok, shape, added: result.added };
+      }
+
+      if (toolName === "create_drawing_tool") {
+        return saveTool(input);
+      }
+
+      const customTool = drawingToolsRef.current.find((tool) => tool.name === toolName);
+      if (customTool) return runCustomTool(customTool, input);
+
+      return { ok: false, error: "Unknown DrawAI tool: " + toolName };
+    },
+    [addToScene, saveTool, runCustomTool],
+  );
+
+  const webmcpTools = useMemo<WebMCPToolDefinition[]>(
+    () => [
+      ...BASE_TOOL_META.map((tool) => ({
+        ...tool,
+        execute: async () => ({ ok: true }),
+      })),
+      ...drawingTools.map((tool) => ({
+        name: tool.name,
+        title: tool.title,
+        description: tool.description,
+        inputSchema: toolInputSchema(tool),
+        annotations: { untrustedContentHint: true },
+        execute: async () => ({ ok: true }),
+      })),
+    ],
+    [drawingTools],
+  );
 
   useEffect(() => {
-    let cancelled = false;
-    void registerToolSurface(
-      [...baseTools, ...customDefinitions],
-      async (input, options) => {
-        const toolName = typeof input.__toolName === "string" ? input.__toolName : "";
-        const cleanInput = { ...input };
-        delete cleanInput.__toolName;
-        if (options?.signal?.aborted) return { ok: false, error: "Tool execution cancelled." };
-        return perform(toolName, cleanInput);
-      },
-      ({ message, mode }) => {
-        if (!cancelled) {
-          setRuntimeMode(mode);
-          addEvent("Registry synchronized", message, mode === "offline" ? "muted" : "mint");
+    let cleanup: (() => void) | undefined;
+    registerToolSurface(webmcpTools, executeRegisteredTool, (event) => {
+      setRuntimeMode(event.mode);
+      addEvent("system", event.mode === "offline" ? "Preview mode" : "WebMCP registry synced", event.message);
+    }).then((dispose) => {
+      cleanup = dispose;
+    });
+    return () => cleanup?.();
+  }, [addEvent, executeRegisteredTool, webmcpTools]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && studioOpen) setStudioOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [studioOpen]);
+
+  useEffect(() => {
+    const debugWindow = window as Window & {
+      __drawaiState?: {
+        sceneCount: number;
+        customTools: string[];
+        runtimeMode: RuntimeMode;
+        openStudio: () => void;
+      };
+    };
+    debugWindow.__drawaiState = {
+      sceneCount: sceneElements.length,
+      customTools: drawingTools.map((tool) => tool.name),
+      runtimeMode,
+      openStudio: () => setStudioOpen(true),
+    };
+    return () => {
+      delete debugWindow.__drawaiState;
+    };
+  }, [drawingTools, runtimeMode, sceneElements.length]);
+
+  const runPrompt = useCallback(
+    (value: string) => {
+      const request = value.trim();
+      if (!request) return;
+      const lower = request.toLowerCase();
+      setPrompt("");
+
+      if (lower.includes("journey") || lower.includes("flow") || lower.includes("flujo")) {
+        const result = addToScene(
+          actionSkeletons("user_journey", { input: request, x: 260, y: 610 }),
+          "agent",
+          "Agent mapped a user journey",
+          "Three editable steps were added to the shared canvas.",
+        );
+        addEvent("human", "Prompt understood", result.ok ? "Flow added from your request." : "The canvas was not ready yet.");
+        return;
+      }
+
+      if (lower.includes("sticky") || lower.includes("note") || lower.includes("nota")) {
+        const result = addToScene(
+          shapeSkeletons({ shape: "sticky", input: request, x: 500, y: 610 }),
+          "agent",
+          "Agent added a sticky note",
+          "The note is editable with the regular Excalidraw tools.",
+        );
+        addEvent("human", "Prompt understood", result.ok ? "Sticky note added." : "The canvas was not ready yet.");
+        return;
+      }
+
+      if (lower.includes("clear") || lower.includes("delete") || lower.includes("borrar")) {
+        const api = apiRef.current;
+        const selected = selectedIds;
+        if (api && selected.length) {
+          api.updateScene({
+            elements: api
+              .getSceneElementsIncludingDeleted()
+              .map((element) => (selected.includes(element.id) ? { ...element, isDeleted: true } : element)),
+          });
+          addEvent("agent", "Selection cleared", selected.length + " selected element(s) removed.");
+        } else {
+          addEvent("agent", "Nothing selected", "Select an element first, then ask me to clear it.");
         }
-      },
-    );
-    return () => { cancelled = true; };
-    // The tool handler reads the latest state through stateRef; customDefinitions is the lifecycle boundary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customDefinitions]);
+        return;
+      }
 
-  const activeTools = [...baseTools, ...customDefinitions];
-  const openTasks = state.tasks.filter((task) => task.status === "open");
-  const level = state.customTools.length >= 2 ? 3 : state.customTools.length >= 1 ? 2 : 1;
-  const progress = level === 1 ? 34 : level === 2 ? 67 : 100;
-  const modeLabel = runtimeMode === "offline" ? "Preview mode" : runtimeMode === "native" ? "Native WebMCP" : "Compatibility mode";
+      if (lower.includes("tool") || lower.includes("herramienta")) {
+        setStudioOpen(true);
+        addEvent("agent", "Tool Studio opened", "Describe a reusable canvas action and we will make it together.");
+        return;
+      }
 
-  const runPrompt = async () => {
-    const prompt = agentPrompt.trim();
-    if (!prompt) return;
-    const normalized = prompt.toLowerCase();
-    if (normalized.includes("crear") || normalized.includes("diseña") || normalized.includes("design")) {
-      setStudioOpen(true);
-      setAgentReply("I need one more decision: what should this new capability do?");
-      addEvent("Agent requested an extension", "Tool Studio is ready for a focused capability.", "violet");
-      return;
-    }
-    if (normalized.includes("completa") || normalized.includes("finish") || normalized.includes("done")) {
-      await perform("apply_task_change", { operation: "complete" });
-      setAgentReply("I used apply_task_change to complete the first open task.");
-      return;
-    }
-    if (normalized.includes("añade") || normalized.includes("agrega") || normalized.includes("add")) {
-      const title = prompt
-        .replace(/.*?(añade|agrega|add)\s+/i, "")
-        .replace(/^(?:a|an|the)\s+task\s+to\s+/i, "")
-        .trim() || "Follow up on the next useful step";
-      await perform("apply_task_change", { operation: "add", title });
-      setAgentReply("I used apply_task_change to add that to the shared workspace.");
-      return;
-    }
-    const result = await perform("get_workspace_snapshot", { includeNotes: true }) as { openTasks?: Task[]; focus?: string };
-    setAgentReply("I read the workspace: " + (result.openTasks?.length ?? 0) + " open tasks, focused on “" + result.focus + "”.");
-  };
+      const result = addToScene(
+        shapeSkeletons({ shape: "text", input: request, x: 420, y: 610 }),
+        "agent",
+        "Agent captured an idea",
+        "I placed your request on the shared canvas as editable text.",
+      );
+      addEvent("human", "Prompt understood", result.ok ? "Idea added as a canvas label." : "The canvas was not ready yet.");
+    },
+    [addEvent, addToScene, selectedIds],
+  );
 
-  const resetWorkspace = () => {
-    setState(starterState);
-    addEvent("Workspace reset", "Back to the smallest useful surface.", "muted");
-    addToast("Workspace reset");
-  };
+  const openNewTool = useCallback(() => {
+    setEditingToolId(null);
+    setToolForm(EMPTY_TOOL_FORM);
+    setStudioOpen(true);
+  }, []);
 
-  const openCreate = () => { setEditingTool(null); setStudioOpen(true); };
-  const openEdit = (tool: CustomTool) => { setEditingTool(tool); setStudioOpen(true); };
-  const deleteTool = async (tool: CustomTool) => { await perform("design_tool", { operation: "delete", name: tool.name }); };
+  const editTool = useCallback((tool: DrawingTool) => {
+    setEditingToolId(tool.id);
+    setToolForm(initialToolForm(tool));
+    setStudioOpen(true);
+  }, []);
+
+  const submitTool = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      saveTool({
+        operation: editingToolId ? "update" : "create",
+        id: editingToolId || undefined,
+        ...toolForm,
+      });
+      setStudioOpen(false);
+      setEditingToolId(null);
+      setToolForm(EMPTY_TOOL_FORM);
+    },
+    [editingToolId, saveTool, toolForm],
+  );
+
+  const deleteTool = useCallback(
+    (tool: DrawingTool) => {
+      saveTool({ operation: "delete", id: tool.id });
+    },
+    [saveTool],
+  );
+
+  const runtimeLabel =
+    runtimeMode === "native" ? "WebMCP connected" : runtimeMode === "fallback" ? "WebMCP fallback" : "Preview mode";
+  const initialData = useMemo(
+    () => ({
+      elements: initialElementsRef.current,
+      appState: { viewBackgroundColor: "#ffffff" as const },
+    }),
+    [],
+  );
+  const handleExcalidrawApi = useCallback((api: ExcalidrawImperativeAPI) => {
+    apiRef.current = api;
+  }, []);
+  const renderTopRightUI = useCallback(
+    () => (
+      <button
+        className="drawai-inline-trigger"
+        type="button"
+        onClick={() => setPanelOpen((open) => !open)}
+        aria-label={panelOpen ? "Close DrawAI copilot" : "Open DrawAI copilot"}
+        title="Toggle DrawAI copilot"
+      >
+        <Sparkles size={14} />
+        DrawAI
+      </button>
+    ),
+    [panelOpen],
+  );
+  const renderCustomStats = useCallback(
+    (elements: readonly NonDeletedExcalidrawElement[]) => (
+      <span className="drawai-stats">
+        {elements.length} elements · {drawingTools.length} custom tools
+      </span>
+    ),
+    [drawingTools.length],
+  );
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-lockup">
-          <div className="brand-mark"><span>↗</span></div>
-          <div><div className="brand-name">escalero</div><div className="brand-subtitle">web-native capability</div></div>
-        </div>
+    <main className={"drawai-app " + (panelOpen ? "panel-open" : "panel-closed")}>
+      <div className="drawai-canvas">
+        <Excalidraw
+          name="drawai"
+          theme="light"
+          initialData={initialData}
+          excalidrawAPI={handleExcalidrawApi}
+          onChange={handleChange}
+          renderTopRightUI={renderTopRightUI}
+          renderCustomStats={renderCustomStats}
+        />
+      </div>
 
-        <div className="sidebar-section-label">Workspace</div>
-        <nav className="sidebar-nav">
-          <button className="sidebar-link active"><Layers3 size={17} /><span>Capability ladder</span><span className="nav-count">{activeTools.length}</span></button>
-          <button className="sidebar-link" onClick={() => setShowInspector((current) => !current)}><TerminalSquare size={17} /><span>Runtime inspector</span><span className="live-dot" /></button>
-          <button className="sidebar-link" onClick={openCreate}><WandSparkles size={17} /><span>Tool studio</span><ChevronRight size={15} className="nav-chevron" /></button>
-        </nav>
+      {!panelOpen && (
+        <button className="drawai-floating-trigger" type="button" onClick={() => setPanelOpen(true)}>
+          <Sparkles size={16} />
+          Open DrawAI
+        </button>
+      )}
 
-        <div className="ladder-card">
-          <div className="ladder-header"><span>Growth path</span><span className="ladder-level">0{level} / 03</span></div>
-          <div className="progress-track"><span style={{ width: progress + "%" }} /></div>
-          <div className="ladder-title">{level === 1 ? "Start with intent" : level === 2 ? "Adapt to the need" : "Compose the system"}</div>
-          <p>{level === 1 ? "A small surface is easier for humans and agents to trust." : level === 2 ? "You added a capability without rebuilding the app." : "The workspace now carries its own evolving vocabulary."}</p>
-          <div className="ladder-steps">
-            <span className={level >= 1 ? "reached" : ""}><i />Small</span>
-            <span className={level >= 2 ? "reached" : ""}><i />Adapt</span>
-            <span className={level >= 3 ? "reached" : ""}><i />Compose</span>
-          </div>
-        </div>
-
-        <div className="sidebar-footer">
-          <div className="profile-chip"><div className="avatar">AS</div><div><strong>Andrés’ workspace</strong><span>Personal prototype</span></div><Settings2 size={15} /></div>
-          <button className="reset-button" onClick={resetWorkspace}><RefreshCw size={14} />Reset demo state</button>
-        </div>
-      </aside>
-
-      <section className="content-area">
-        <header className="topbar">
-          <div className="breadcrumb"><span>Workspace</span><ChevronRight size={13} /><strong>Capability ladder</strong></div>
-          <div className="topbar-actions"><div className={"runtime-pill " + runtimeMode}><span className="pill-dot" />{modeLabel}<span className="pill-divider" />{activeTools.length} tools exposed</div><button className="icon-button" aria-label="Open command menu"><Command size={17} /></button></div>
-        </header>
-
-        <div className="page-content">
-          <div className="hero-row">
-            <div className="hero-copy">
-              <div className="eyebrow"><Sparkles size={14} />A workspace that grows with the work</div>
-              <h1>Start small.<br /><em>Become specific.</em></h1>
-              <p>Escalero gives humans and agents the smallest useful tool surface — then lets the workflow teach it what to become next.</p>
-              <div className="hero-actions"><button className="primary-button" onClick={openCreate}><Plus size={17} />Design a capability</button><button className="text-button" onClick={() => setShowInspector((current) => !current)}>See the runtime <ArrowUpRight size={15} /></button></div>
-            </div>
-            <div className="hero-visual" aria-hidden="true">
-              <div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="hero-node node-main"><Zap size={22} /><span>your workflow</span></div>
-              <div className="hero-node node-a"><ListPlus size={16} /><span>task</span></div><div className="hero-node node-b"><WandSparkles size={16} /><span>adapt</span></div><div className="hero-node node-c"><Layers3 size={16} /><span>compose</span></div>
-              <div className="connector connector-a" /><div className="connector connector-b" /><div className="connector connector-c" />
-            </div>
-          </div>
-
-          <div className="metric-strip"><div><span className="metric-label">ACTIVE CAPABILITIES</span><strong>{activeTools.length}</strong><small>{state.customTools.length ? "+" + state.customTools.length + " designed by you" : "The smallest useful surface"}</small></div><div><span className="metric-label">OPEN INTENTS</span><strong>{openTasks.length}</strong><small>Shared with the agent in real time</small></div><div><span className="metric-label">CURRENT FOCUS</span><strong className="focus-metric">{state.focus}</strong><small>Human-readable context</small></div><div className="metric-signal"><Radio size={16} /><span>Registry<br /><b>synchronized</b></span></div></div>
-
-          <div className="dashboard-grid">
-            <section className="panel workspace-panel">
-              <div className="panel-heading"><div><span className="section-kicker">SHARED WORKSPACE</span><h2>What needs to move?</h2></div><span className="sync-badge"><CircleDot size={12} />Live state</span></div>
-              <div className="focus-banner"><div className="focus-icon"><Lightbulb size={16} /></div><div><span>Current focus</span><strong>{state.focus}</strong></div><button aria-label="Change focus" onClick={() => setState((current) => ({ ...current, focus: current.focus === "Make the next step obvious" ? "Turn friction into a capability" : "Make the next step obvious" }))}><Edit3 size={15} /></button></div>
-              <div className="task-list">
-                {state.tasks.map((task) => <div className={"task-row " + task.status} key={task.id}><button className={"task-check " + task.status} aria-label={task.status === "done" ? "Completed" : "Complete task"} onClick={() => void perform("apply_task_change", { operation: task.status === "done" ? "rename" : "complete", taskId: task.id, ...(task.status === "done" ? { title: task.title } : {}) })}>{task.status === "done" ? <Check size={14} /> : null}</button><span className="task-title">{task.title}</span><span className="task-origin">{task.id === "task_1" ? "seed" : "shared"}</span></div>)}
+      {panelOpen && (
+        <aside className="drawai-panel" aria-label="DrawAI copilot">
+          <div className="panel-header">
+            <div>
+              <div className="eyebrow">
+                <span className="eyebrow-mark">
+                  <Pencil size={12} />
+                </span>
+                DRAWING × WEBMCP
               </div>
-              <button className="add-task-button" onClick={() => { const title = window.prompt("New task"); if (title) void perform("apply_task_change", { operation: "add", title }); }}><Plus size={15} />Add a task</button>
-              <div className="workspace-note"><MessageSquareText size={15} /><span>{state.notes[0]}</span></div>
-            </section>
+              <h1>DrawAI</h1>
+              <p>Human + agent on one canvas.</p>
+            </div>
+            <button className="icon-button" type="button" onClick={() => setPanelOpen(false)} aria-label="Close DrawAI copilot">
+              <X size={18} />
+            </button>
+          </div>
 
-            <section className="panel registry-panel">
-              <div className="panel-heading"><div><span className="section-kicker">WEBMCP RUNTIME</span><h2>Live tool registry</h2></div><span className="registry-count">{activeTools.length} exposed</span></div>
-              <p className="panel-intro">The agent sees only this surface. When your need changes, the schema changes with it.</p>
-              <div className="tool-list">
-                {activeTools.map((tool) => {
-                  const custom = state.customTools.find((item) => item.name === tool.name);
-                  return <div className={"tool-row " + (custom ? "custom" : "")} key={tool.name}><div className={"tool-icon " + (custom ? "custom-icon" : "")}>{toolIcon(tool.name)}</div><div className="tool-info"><div className="tool-name-line"><strong>{tool.name}</strong>{custom ? <span className="you-badge">YOU</span> : <span className="core-badge">CORE</span>}</div><span>{tool.title}</span></div>{custom ? <div className="tool-actions"><button onClick={() => openEdit(custom)} aria-label={"Edit " + custom.title}><Edit3 size={14} /></button><button onClick={() => void deleteTool(custom)} aria-label={"Delete " + custom.title}><Trash2 size={14} /></button></div> : <span className="tool-live">LIVE</span>}</div>;
-                })}
+          <div className={"runtime-status " + runtimeMode}>
+            <span className="status-dot" />
+            <span>{runtimeLabel}</span>
+            <span className="runtime-count">{webmcpTools.length} tools</span>
+          </div>
+
+          <section className="copilot-section">
+            <div className="section-heading">
+              <div>
+                <span className="section-kicker">COPILOT</span>
+                <h2>What should we draw?</h2>
               </div>
-              <button className="registry-cta" onClick={openCreate}><Plus size={15} />Extend the surface <span>⌘ K</span></button>
-            </section>
-          </div>
+              <Bot size={20} className="section-icon" />
+            </div>
+            <p className="section-description">
+              Ask for a flow, a note, or a new reusable tool. The agent edits the same canvas you can edit.
+            </p>
+            <div className="prompt-box">
+              <textarea
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    runPrompt(prompt);
+                  }
+                }}
+                placeholder="e.g. Map the checkout journey"
+                aria-label="Agent prompt"
+                rows={3}
+              />
+              <button type="button" className="prompt-submit" onClick={() => runPrompt(prompt)} disabled={!prompt.trim()}>
+                <ArrowUpRight size={16} />
+              </button>
+            </div>
+            <div className="prompt-chips">
+              <button type="button" onClick={() => runPrompt("Map a user journey for onboarding")}>
+                <LayoutTemplate size={13} /> User journey
+              </button>
+              <button type="button" onClick={() => runPrompt("Add a sticky note about the next idea")}>
+                <Plus size={13} /> Sticky note
+              </button>
+              <button type="button" onClick={() => setStudioOpen(true)}>
+                <WandSparkles size={13} /> Make a tool
+              </button>
+            </div>
+          </section>
 
-          <div className="lower-grid">
-            <section className="panel agent-panel">
-              <div className="panel-heading"><div><span className="section-kicker">AGENT CONSOLE</span><h2>Ask for the next step</h2></div><div className="agent-avatar"><Bot size={17} /></div></div>
-              <p className="panel-intro">Try a natural-language intent. The demo routes it through the same semantic tools exposed to a real agent.</p>
-              <div className="prompt-box"><textarea value={agentPrompt} onChange={(event) => setAgentPrompt(event.target.value)} placeholder="e.g. Add a task to review the launch flow…" rows={2} /><button className="send-button" onClick={() => void runPrompt()} aria-label="Run agent intent"><ArrowUpRight size={17} /></button></div>
-              <div className="prompt-footer"><span><span className="kbd">↵</span> Run intent</span><div className="suggestion-chips"><button onClick={() => setAgentPrompt("Add a task to test the new capability")}>Add a task</button><button onClick={() => setAgentPrompt("Complete the first open task")}>Complete one</button><button onClick={() => setAgentPrompt("Create a new capability")}>Create tool</button></div></div>
-              <div className="agent-reply"><div className="reply-icon"><Bot size={15} /></div><span>{agentReply}</span></div>
-            </section>
+          <section className="activity-section">
+            <div className="section-heading compact">
+              <div>
+                <span className="section-kicker">LIVE TRACE</span>
+                <h2>Activity</h2>
+              </div>
+              <Activity size={18} className="section-icon" />
+            </div>
+            <div className="activity-list">
+              {events.slice(0, 4).map((event) => (
+                <div className="activity-row" key={event.id}>
+                  <div className={"activity-avatar " + event.actor}>
+                    {event.actor === "agent" ? <Bot size={13} /> : event.actor === "human" ? <MousePointer2 size={13} /> : <CircleDashed size={13} />}
+                  </div>
+                  <div className="activity-copy">
+                    <strong>{event.label}</strong>
+                    <span>{event.detail}</span>
+                  </div>
+                  <time>{event.time}</time>
+                </div>
+              ))}
+            </div>
+          </section>
 
-            <section className="panel activity-panel">
-              <div className="panel-heading"><div><span className="section-kicker">ACTIVITY TRACE</span><h2>Shared context, visible</h2></div><span className="trace-live"><span />LIVE</span></div>
-              <div className="activity-list">{events.slice(0, 5).map((event) => <div className="activity-row" key={event.id}><div className={"activity-dot " + event.tone} /><div className="activity-copy"><strong>{event.label}</strong><span>{event.detail}</span></div><time>{timeLabel(event.time)}</time></div>)}</div>
-            </section>
-          </div>
+          <section className="tools-section">
+            <div className="section-heading compact">
+              <div>
+                <span className="section-kicker">LIVE REGISTRY</span>
+                <h2>Drawing tools</h2>
+              </div>
+              <button type="button" className="small-action" onClick={openNewTool}>
+                <Plus size={14} /> New
+              </button>
+            </div>
+            <div className="tool-list">
+              {BASE_TOOL_META.map((tool) => (
+                <div className="tool-row built-in" key={tool.name}>
+                  <div className="tool-icon"><Code2 size={15} /></div>
+                  <div className="tool-copy">
+                    <strong>{tool.name}</strong>
+                    <span>{tool.title}</span>
+                  </div>
+                  <span className="tool-pill">base</span>
+                </div>
+              ))}
+              {drawingTools.map((tool) => (
+                <div className="tool-row custom" key={tool.id}>
+                  <div className="tool-icon custom"><WandSparkles size={15} /></div>
+                  <div className="tool-copy">
+                    <strong>{tool.name}</strong>
+                    <span>{ACTION_LABELS[tool.action]}</span>
+                  </div>
+                  <div className="tool-actions">
+                    <button
+                      type="button"
+                      onClick={() => runCustomTool(tool, { input: "A new idea" })}
+                      aria-label={"Run " + tool.title}
+                      title={"Run " + tool.title}
+                    >
+                      <ArrowUpRight size={14} />
+                    </button>
+                    <button type="button" onClick={() => editTool(tool)} aria-label={"Edit " + tool.title} title="Edit tool">
+                      <Pencil size={13} />
+                    </button>
+                    <button type="button" onClick={() => deleteTool(tool)} aria-label={"Delete " + tool.title} title="Delete tool">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {!drawingTools.length && (
+              <button className="empty-tool-card" type="button" onClick={openNewTool}>
+                <Sparkles size={16} />
+                <span><strong>Make the canvas yours.</strong> Create a tool with the agent.</span>
+                <ChevronDown size={14} />
+              </button>
+            )}
+          </section>
 
-          {showInspector && <section className="inspector-panel"><div className="inspector-heading"><div><span className="section-kicker">DEVELOPER VIEW</span><h2>What WebMCP receives</h2></div><button className="close-inline" onClick={() => setShowInspector(false)}><X size={16} /></button></div><div className="inspector-body"><div className="code-window"><div className="code-top"><span /><span /><span /><small>runtime.ts</small></div><pre><code><span className="code-purple">await</span> document.modelContext.registerTool({"{"}<br />{"  name: \"" + activeTools[activeTools.length - 1]?.name + "\","}<br />{"  description: \"...exact intent...\","}<br />{"  inputSchema: { /* strict JSON Schema */ },"}<br />{"  execute: async (input) =&gt; ..."}<br />{"});"}</code></pre></div><div className="inspector-facts"><div><span>Registration</span><strong>document.modelContext</strong></div><div><span>Lifecycle</span><strong>AbortController</strong></div><div><span>Current surface</span><strong>{activeTools.length} tools</strong></div><div><span>State</span><strong>Shared + live</strong></div></div></div></section>}
+          <footer className="panel-footer">
+            <span><Check size={13} /> Autosaved locally</span>
+            <span>{sceneElements.length} elements</span>
+          </footer>
+        </aside>
+      )}
 
-          <footer className="page-footer"><span><Code2 size={14} />Built for The WebMCP Challenge</span><a href="https://developer.chrome.com/docs/ai/webmcp" target="_blank" rel="noreferrer">Read the WebMCP docs <ArrowUpRight size={13} /></a><span className="footer-note">A tool surface should earn its complexity.</span></footer>
+      {studioOpen && (
+        <div className="studio-layer" role="dialog" aria-modal="true" aria-label="Drawing tool studio">
+          <form className="tool-studio" onSubmit={submitTool}>
+            <div className="studio-header">
+              <div>
+                <span className="section-kicker">TOOL STUDIO</span>
+                <h2>{editingToolId ? "Tune a shared tool" : "Create a shared tool"}</h2>
+                <p>Give the agent and your canvas a reusable move.</p>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setStudioOpen(false)} aria-label="Close tool studio">
+                <X size={18} />
+              </button>
+            </div>
+            <label>
+              Tool name
+              <input
+                value={toolForm.name}
+                onChange={(event) => setToolForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="e.g. mark_risk"
+                required
+              />
+              <span className="field-hint">Published as {makeToolName(toolForm.name || "new_tool")}</span>
+            </label>
+            <label>
+              Display title
+              <input
+                value={toolForm.title}
+                onChange={(event) => setToolForm((current) => ({ ...current, title: event.target.value }))}
+                placeholder="Mark a risk"
+                required
+              />
+            </label>
+            <label>
+              Description
+              <textarea
+                value={toolForm.description}
+                onChange={(event) => setToolForm((current) => ({ ...current, description: event.target.value }))}
+                placeholder="What should this tool do?"
+                rows={2}
+                required
+              />
+            </label>
+            <label>
+              Input prompt
+              <input
+                value={toolForm.inputLabel}
+                onChange={(event) => setToolForm((current) => ({ ...current, inputLabel: event.target.value }))}
+                placeholder="What should be highlighted?"
+                required
+              />
+            </label>
+            <label>
+              Canvas action
+              <span className="select-wrap">
+                <select
+                  value={toolForm.action}
+                  onChange={(event) => setToolForm((current) => ({ ...current, action: event.target.value as DrawingToolAction }))}
+                >
+                  {Object.entries(ACTION_LABELS).map(([value, label]) => (
+                    <option value={value} key={value}>{label}</option>
+                  ))}
+                </select>
+                <ChevronDown size={15} />
+              </span>
+            </label>
+            <div className="schema-preview">
+              <div><Code2 size={14} /> WebMCP schema</div>
+              <code>{"{ input: string, x?: number, y?: number }"}</code>
+            </div>
+            <div className="studio-actions">
+              <button type="button" className="secondary-button" onClick={() => setStudioOpen(false)}>Cancel</button>
+              <button type="submit" className="primary-button"><Sparkles size={15} /> {editingToolId ? "Save changes" : "Create tool"}</button>
+            </div>
+          </form>
         </div>
-      </section>
-
-      {studioOpen && <ToolStudio editingTool={editingTool} onClose={() => { setStudioOpen(false); setEditingTool(null); }} onSave={async (payload) => { await perform("design_tool", { operation: editingTool ? "update" : "create", ...(editingTool ? { name: editingTool.name } : {}), ...payload }); setStudioOpen(false); setEditingTool(null); }} />}
-      {toast && <div className="toast"><Check size={15} />{toast}</div>}
+      )}
     </main>
   );
-}
-
-interface ToolStudioProps {
-  editingTool: CustomTool | null;
-  onClose: () => void;
-  onSave: (payload: { name: string; title: string; description: string; inputLabel: string; action: CustomAction }) => Promise<void>;
-}
-
-function ToolStudio({ editingTool, onClose, onSave }: ToolStudioProps) {
-  const [name, setName] = useState(editingTool?.name ?? "capture_decision");
-  const [title, setTitle] = useState(editingTool?.title ?? "Capture a decision");
-  const [description, setDescription] = useState(editingTool?.description ?? "Save a short decision to the shared workspace when the team reaches clarity.");
-  const [inputLabel, setInputLabel] = useState(editingTool?.inputLabel ?? "The decision to capture");
-  const [action, setAction] = useState<CustomAction>(editingTool?.action ?? "add_note");
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    void onSave({ name: makeToolName(name), title: title.trim(), description: description.trim(), inputLabel: inputLabel.trim(), action });
-  };
-
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Tool studio"><div className="studio-modal"><div className="studio-top"><div><span className="section-kicker">TOOL STUDIO / {editingTool ? "EDIT" : "CREATE"}</span><h2>{editingTool ? "Refine a capability" : "Design a capability"}</h2><p>One clear input. One safe action. A capability your workflow can understand.</p></div><button className="close-button" onClick={onClose} aria-label="Close tool studio"><X size={18} /></button></div><form onSubmit={submit}><div className="form-grid"><label><span>Tool name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="capture_decision" required /><small>Normalized to stable snake_case.</small></label><label><span>Display title</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Capture a decision" required /></label></div><label><span>When should an agent use it?</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} required /></label><label><span>Input meaning</span><input value={inputLabel} onChange={(event) => setInputLabel(event.target.value)} required /><small>This becomes the JSON Schema description for <code>input</code>.</small></label><label><span>Safe workspace action</span><select value={action} onChange={(event) => setAction(event.target.value as CustomAction)}>{(Object.keys(actionLabels) as CustomAction[]).map((key) => <option key={key} value={key}>{actionLabels[key]}</option>)}</select><small>{actionDescriptions[action]}</small></label><div className="schema-preview"><div className="schema-preview-head"><span>SCHEMA PREVIEW</span><span>strict · one input</span></div><pre>{"{\n  \"name\": \"" + (makeToolName(name) || "new_capability") + "\",\n  \"inputSchema\": {\n    \"input\": \"" + (inputLabel || "...") + "\"\n  }\n}"}</pre></div><div className="studio-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><WandSparkles size={16} />{editingTool ? "Update capability" : "Add to live surface"}</button></div></form></div></div>;
 }
 
 export default App;

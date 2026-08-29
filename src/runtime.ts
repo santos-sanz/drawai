@@ -72,7 +72,7 @@ export async function registerToolSurface(
       await context.registerTool({ ...tool, execute: toolExecutor }, { signal: controller.signal });
       registered += 1;
     } catch (error) {
-      console.warn("[Escalero] Could not register " + tool.name, error);
+      console.warn("[DrawAI] Could not register " + tool.name, error);
     }
   }
 
@@ -90,5 +90,5 @@ export function makeToolName(value: string): string {
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 42);
-  return normalized || "new_capability";
+  return normalized || "new_drawing_tool";
 }
