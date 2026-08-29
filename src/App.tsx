@@ -10,12 +10,15 @@ import {
   Activity,
   ArrowUpRight,
   Bot,
+  Cable,
   Check,
   ChevronDown,
   CircleDashed,
   Code2,
+  GitBranch,
   LayoutTemplate,
   MousePointer2,
+  Radio,
   Pencil,
   Plus,
   Sparkles,
@@ -31,6 +34,7 @@ import {
   type RuntimeMode,
   type WebMCPToolDefinition,
 } from "./runtime";
+import { DRAWAI_AGENT_PROTOCOL, DrawAIAgentBridge } from "./agentBridge";
 import type { AgentEvent, DrawingTool, DrawingToolAction } from "./types";
 
 const SCENE_KEY = "drawai-scene-v1";
@@ -130,6 +134,39 @@ const INITIAL_ELEMENTS = convertToExcalidrawElements(INITIAL_SKELETONS, {
 const BASE_TOOL_META: Array<
   Pick<WebMCPToolDefinition, "name" | "title" | "description" | "inputSchema" | "annotations">
 > = [
+  {
+    name: "draw_process_flow",
+    title: "Draw a process flow",
+    description:
+      "Create a structured multi-stage process flow on the shared canvas. Use it for manufacturing, operations, or any ordered workflow.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Flowchart title." },
+        stages: {
+          type: "array",
+          minItems: 2,
+          maxItems: 16,
+          description: "Ordered process stages, each with a name and optional description.",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Short stage name." },
+              description: { type: "string", description: "Optional stage detail." },
+            },
+            required: ["name"],
+            additionalProperties: false,
+          },
+        },
+        x: { type: "number", description: "Canvas x coordinate for the flow." },
+        y: { type: "number", description: "Canvas y coordinate for the flow." },
+        replace: { type: "boolean", description: "Replace the current scene when true; defaults to appending." },
+      },
+      required: ["title", "stages"],
+      additionalProperties: false,
+    },
+    annotations: { untrustedContentHint: true },
+  },
   {
     name: "get_canvas_snapshot",
     title: "Inspect canvas",
@@ -263,6 +300,131 @@ function stringValue(value: unknown, fallback = ""): string {
 
 function getInputText(input: Record<string, unknown>, fallback: string): string {
   return stringValue(input.text ?? input.input ?? input.label ?? input.title, fallback);
+}
+
+const DEFAULT_METAL_PAINT_STAGES = [
+  "Especificaciones y chapa",
+  "Desbobinado y nivelado",
+  "Corte de blanks",
+  "Conformado del cuerpo",
+  "Cierre de costura",
+  "Pestaña y reborde",
+  "Montaje de la base",
+  "Recubrimiento y curado",
+  "Tapa y asa",
+  "Llenado, etiqueta y embalaje",
+];
+
+type ProcessStage = { name: string; description?: string };
+
+function processFlowSkeletons(input: Record<string, unknown>): ExcalidrawElementSkeleton[] {
+  const title = stringValue(input.title, "Process flow");
+  const rawStages = Array.isArray(input.stages) ? input.stages : DEFAULT_METAL_PAINT_STAGES;
+  const stages: ProcessStage[] = rawStages
+    .map((stage) => {
+      if (typeof stage === "string") return { name: stage.trim() };
+      if (stage && typeof stage === "object") {
+        const value = stage as Record<string, unknown>;
+        return {
+          name: stringValue(value.name, "Unnamed stage"),
+          description: stringValue(value.description),
+        };
+      }
+      return { name: "Unnamed stage" };
+    })
+    .filter((stage) => stage.name)
+    .slice(0, 16);
+  const safeStages: ProcessStage[] = stages.length >= 2 ? stages : DEFAULT_METAL_PAINT_STAGES.map((name) => ({ name }));
+  const x = numeric(input.x, 72);
+  const y = numeric(input.y, 120);
+  const columns = Math.min(4, Math.max(2, safeStages.length));
+  const nodeWidth = 190;
+  const nodeHeight = 96;
+  const gapX = 38;
+  const gapY = 74;
+  const titleHeight = 64;
+  const positions = safeStages.map((_, index) => {
+    const row = Math.floor(index / columns);
+    const columnInRow = index % columns;
+    const column = row % 2 === 0 ? columnInRow : columns - 1 - columnInRow;
+    return {
+      x: x + column * (nodeWidth + gapX),
+      y: y + titleHeight + 36 + row * (nodeHeight + gapY),
+      row,
+      column,
+    };
+  });
+  const palette = [
+    ["#5b3f8f", "#eee7ff"],
+    ["#167d72", "#dff5ed"],
+    ["#b86a22", "#fff0d3"],
+    ["#35689a", "#e5effb"],
+  ];
+  const elements: ExcalidrawElementSkeleton[] = [
+    {
+      type: "rectangle",
+      x,
+      y,
+      width: columns * nodeWidth + (columns - 1) * gapX,
+      height: titleHeight,
+      strokeColor: "#30294d",
+      backgroundColor: "#e9e1ff",
+      fillStyle: "solid",
+      roundness: { type: 3 },
+      label: { text: title, fontSize: 22 },
+    } as ExcalidrawElementSkeleton,
+  ];
+
+  positions.forEach((position, index) => {
+    const [strokeColor, backgroundColor] = palette[index % palette.length];
+    const stage = safeStages[index];
+    const detail = stage.description ? "\n" + stage.description : "";
+    elements.push({
+      type: "rectangle",
+      x: position.x,
+      y: position.y,
+      width: nodeWidth,
+      height: nodeHeight,
+      strokeColor,
+      backgroundColor,
+      fillStyle: "solid",
+      roundness: { type: 3 },
+      label: { text: String(index + 1).padStart(2, "0") + " · " + stage.name + detail, fontSize: detail ? 15 : 17 },
+    } as ExcalidrawElementSkeleton);
+  });
+
+  positions.slice(0, -1).forEach((from, index) => {
+    const to = positions[index + 1];
+    if (from.row === to.row) {
+      const forward = to.column > from.column;
+      elements.push({
+        type: "arrow",
+        x: forward ? from.x + nodeWidth : from.x,
+        y: from.y + nodeHeight / 2,
+        points: [
+          [0, 0],
+          [forward ? gapX : -gapX, 0],
+        ],
+        strokeColor: "#554a72",
+        strokeWidth: 2,
+        endArrowhead: "arrow",
+      } as ExcalidrawElementSkeleton);
+    } else {
+      elements.push({
+        type: "arrow",
+        x: from.x + nodeWidth / 2,
+        y: from.y + nodeHeight,
+        points: [
+          [0, 0],
+          [0, gapY],
+        ],
+        strokeColor: "#554a72",
+        strokeWidth: 2,
+        endArrowhead: "arrow",
+      } as ExcalidrawElementSkeleton);
+    }
+  });
+  return elements;
 }
 
 function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkeleton[] {
@@ -474,6 +636,7 @@ function toolInputSchema(tool: DrawingTool): JsonSchema {
 
 function App() {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const bridgeRef = useRef<DrawAIAgentBridge | null>(null);
   const initialElementsRef = useRef<OrderedExcalidrawElement[]>(loadScene());
   const sceneElementsRef = useRef<readonly OrderedExcalidrawElement[]>(initialElementsRef.current);
   const selectedIdsRef = useRef<string[]>([]);
@@ -489,6 +652,8 @@ function App() {
   const [toolForm, setToolForm] = useState<ToolFormState>(EMPTY_TOOL_FORM);
   const [prompt, setPrompt] = useState("");
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("offline");
+  const [agentCount, setAgentCount] = useState(0);
+  const [bridgeOpen, setBridgeOpen] = useState(false);
   const [events, setEvents] = useState<AgentEvent[]>([
     {
       id: makeId("event"),
@@ -526,14 +691,14 @@ function App() {
   }, []);
 
   const addToScene = useCallback(
-    (skeletons: ExcalidrawElementSkeleton[], actor: AgentEvent["actor"], label: string, detail: string) => {
+    (skeletons: ExcalidrawElementSkeleton[], actor: AgentEvent["actor"], label: string, detail: string, replace = false) => {
       const api = apiRef.current;
       if (!api || skeletons.length === 0) {
         addEvent("system", "Canvas is still loading", "Try again when the editor is visible.");
         return { ok: false, added: 0 };
       }
       const created = convertToExcalidrawElements(skeletons, { regenerateIds: true });
-      const nextElements = [...api.getSceneElements(), ...created];
+      const nextElements = [...(replace ? [] : api.getSceneElements()), ...created];
       api.updateScene({ elements: nextElements });
       sceneElementsRef.current = nextElements;
       setSceneElements(nextElements);
@@ -629,6 +794,21 @@ function App() {
         return { ok: result.ok, shape, added: result.added };
       }
 
+      if (toolName === "draw_process_flow") {
+        const stageCount = Array.isArray(input.stages) && input.stages.length >= 2
+          ? Math.min(input.stages.length, 16)
+          : DEFAULT_METAL_PAINT_STAGES.length;
+        const title = stringValue(input.title, "Process flow");
+        const result = addToScene(
+          processFlowSkeletons(input),
+          "agent",
+          "Agent drew a process flow",
+          title + " · " + stageCount + " editable stages on the shared canvas.",
+          input.replace === true,
+        );
+        return { ok: result.ok, title, stageCount, added: result.added };
+      }
+
       if (toolName === "create_drawing_tool") {
         return saveTool(input);
       }
@@ -671,6 +851,28 @@ function App() {
   }, [addEvent, executeRegisteredTool, webmcpTools]);
 
   useEffect(() => {
+    const bridge = new DrawAIAgentBridge();
+    bridgeRef.current = bridge;
+    const cleanup = bridge.start(webmcpTools, executeRegisteredTool, {
+      onAgentConnected: (agentId, transport) => {
+        setAgentCount(bridge.connectedAgentCount());
+        addEvent("agent", "Agent connected", agentId + " · " + transport + " transport");
+      },
+      onAgentRequest: (tool) => addEvent("agent", "Agent invoked " + tool, "Request received through the DrawAI bridge."),
+      onAgentError: (message) => addEvent("system", "Agent request failed", message),
+    });
+    return () => {
+      cleanup();
+      bridgeRef.current = null;
+      setAgentCount(0);
+    };
+  }, [addEvent, executeRegisteredTool]);
+
+  useEffect(() => {
+    bridgeRef.current?.update(webmcpTools, executeRegisteredTool);
+  }, [executeRegisteredTool, webmcpTools]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && studioOpen) setStudioOpen(false);
     };
@@ -685,6 +887,8 @@ function App() {
         customTools: string[];
         textElements: Array<{ text: string; width: number; height: number }>;
         runtimeMode: RuntimeMode;
+        agentCount: number;
+        agentProtocol: string;
         openStudio: () => void;
       };
     };
@@ -695,12 +899,14 @@ function App() {
         .filter((element) => element.type === "text")
         .map((element) => ({ text: element.text, width: element.width, height: element.height })),
       runtimeMode,
+      agentCount,
+      agentProtocol: DRAWAI_AGENT_PROTOCOL,
       openStudio: () => setStudioOpen(true),
     };
     return () => {
       delete debugWindow.__drawaiState;
     };
-  }, [drawingTools, runtimeMode, sceneElements.length]);
+  }, [agentCount, drawingTools, runtimeMode, sceneElements.length]);
 
   const runPrompt = useCallback(
     (value: string) => {
@@ -708,6 +914,28 @@ function App() {
       if (!request) return;
       const lower = request.toLowerCase();
       setPrompt("");
+
+      const isMetalPaintFlow =
+        (lower.includes("envase") || lower.includes("container") || lower.includes("can")) &&
+        (lower.includes("pintura") || lower.includes("paint")) &&
+        (lower.includes("metal") || lower.includes("metálic"));
+      if (isMetalPaintFlow) {
+        const result = addToScene(
+          processFlowSkeletons({
+            title: "Envase metálico para pintura · proceso de fabricación",
+            stages: DEFAULT_METAL_PAINT_STAGES.map((name) => ({ name })),
+            x: 72,
+            y: 92,
+            replace: true,
+          }),
+          "agent",
+          "Agent drew the manufacturing flow",
+          DEFAULT_METAL_PAINT_STAGES.length + " editable stages added to the shared canvas.",
+          true,
+        );
+        addEvent("human", "Manufacturing request understood", result.ok ? "Complete editable flow added to the shared canvas." : "The canvas was not ready yet.");
+        return;
+      }
 
       if (lower.includes("journey") || lower.includes("flow") || lower.includes("flujo")) {
         const result = addToScene(
@@ -803,7 +1031,7 @@ function App() {
   const initialData = useMemo(
     () => ({
       elements: initialElementsRef.current,
-      appState: { viewBackgroundColor: "#ffffff" as const },
+      appState: { viewBackgroundColor: "#f6f2ea" as const },
     }),
     [],
   );
@@ -848,6 +1076,26 @@ function App() {
         />
       </div>
 
+      <div className="drawai-brand-dock" aria-label="DrawAI identity">
+        <div className="brand-glyph"><GitBranch size={18} strokeWidth={2.4} /></div>
+        <div className="brand-lockup">
+          <strong>DRAWAI</strong>
+          <span>AGENT CANVAS · 01</span>
+        </div>
+        <span className="brand-live"><span /> LIVE</span>
+      </div>
+
+      <nav className="drawai-rail" aria-label="DrawAI shortcuts">
+        <button type="button" onClick={() => setBridgeOpen(true)} aria-label="Open agent bridge" title="Agent bridge">
+          <Cable size={17} />
+        </button>
+        <button type="button" onClick={() => runPrompt("Haz un diagrama de flujo del proceso de fabricación de un envase metalico para pintura")} aria-label="Draw manufacturing flow" title="Manufacturing flow">
+          <GitBranch size={17} />
+        </button>
+        <span className="rail-divider" />
+        <span className="rail-index">01</span>
+      </nav>
+
       {!panelOpen && (
         <button className="drawai-floating-trigger" type="button" onClick={() => setPanelOpen(true)}>
           <Sparkles size={16} />
@@ -879,6 +1127,20 @@ function App() {
             <span className="runtime-count">{webmcpTools.length} tools</span>
           </div>
 
+          <section className="agent-bridge-card">
+            <div className="bridge-card-topline">
+              <span className="section-kicker">AGENT BRIDGE</span>
+              <Radio size={15} />
+            </div>
+            <div className="bridge-card-main">
+              <div>
+                <strong>{agentCount ? agentCount + " agent" + (agentCount === 1 ? "" : "s") + " connected" : "Listening for an agent"}</strong>
+                <span>{DRAWAI_AGENT_PROTOCOL} · BroadcastChannel + postMessage</span>
+              </div>
+              <button type="button" className="bridge-open-button" onClick={() => setBridgeOpen(true)}>Connect</button>
+            </div>
+          </section>
+
           <section className="copilot-section">
             <div className="section-heading">
               <div>
@@ -909,6 +1171,9 @@ function App() {
               </button>
             </div>
             <div className="prompt-chips">
+              <button type="button" onClick={() => runPrompt("Haz un diagrama de flujo del proceso de fabricación de un envase metalico para pintura")}>
+                <GitBranch size={13} /> Metal paint flow
+              </button>
               <button type="button" onClick={() => runPrompt("Map a user journey for onboarding")}>
                 <LayoutTemplate size={13} /> User journey
               </button>
@@ -1082,6 +1347,35 @@ function App() {
               <button type="submit" className="primary-button"><Sparkles size={15} /> {editingToolId ? "Save changes" : "Create tool"}</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {bridgeOpen && (
+        <div className="bridge-layer" role="dialog" aria-modal="true" aria-label="DrawAI agent bridge">
+          <div className="bridge-dialog">
+            <div className="studio-header">
+              <div>
+                <span className="section-kicker">AGENT BRIDGE · {DRAWAI_AGENT_PROTOCOL}</span>
+                <h2>Connect an agent</h2>
+                <p>Give any same-origin agent a live, shared canvas surface.</p>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setBridgeOpen(false)} aria-label="Close agent bridge">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="bridge-steps">
+              <div><span>01</span><strong>Discover</strong><p>Listen on the <code>drawai-agent-v1</code> BroadcastChannel or send a same-origin <code>postMessage</code>.</p></div>
+              <div><span>02</span><strong>Inspect</strong><p>Send <code>drawai:hello</code> or <code>drawai:list_tools</code> to receive the live registry.</p></div>
+              <div><span>03</span><strong>Compose</strong><p>Invoke <code>draw_process_flow</code> or any custom tool. The result lands in this editable scene.</p></div>
+            </div>
+            <pre className="bridge-code"><code>{'const agent = window.__drawaiAgent;\nawait agent.connect("my-agent");\nawait agent.invoke("draw_process_flow", {\n  title: "Metal paint container",\n  stages: [{ name: "Cut sheet" }, { name: "Form body" }, { name: "Coat and cure" }]\n});'}</code></pre>
+            <div className="bridge-dialog-footer">
+              <span><span className="bridge-live-dot" /> {agentCount} connected in this tab</span>
+              <button type="button" className="primary-button" onClick={() => window.__drawaiAgent?.connect("studio-preview")}>
+                <Cable size={14} /> Test page agent
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </main>

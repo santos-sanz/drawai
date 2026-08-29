@@ -68,7 +68,7 @@ export async function registerToolSurface(
     if (controller.signal.aborted) break;
     try {
       const toolExecutor = async (input: Record<string, unknown>, options?: { signal?: AbortSignal }) =>
-        execute({ __toolName: tool.name, ...input }, options);
+        execute({ ...input, __toolName: tool.name }, options);
       await context.registerTool({ ...tool, execute: toolExecutor }, { signal: controller.signal });
       registered += 1;
     } catch (error) {
