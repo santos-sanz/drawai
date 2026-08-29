@@ -121,16 +121,6 @@ const INITIAL_SKELETONS = [
     strokeWidth: 2,
     endArrowhead: "arrow",
   },
-  {
-    type: "text",
-    x: 175,
-    y: 370,
-    text: "Together.",
-    width: 380,
-    height: 30,
-    fontSize: 20,
-    strokeColor: "#5f6368",
-  },
 ] as ExcalidrawElementSkeleton[];
 
 const INITIAL_ELEMENTS = convertToExcalidrawElements(INITIAL_SKELETONS, {
