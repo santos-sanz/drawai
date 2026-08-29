@@ -127,7 +127,9 @@ const INITIAL_SKELETONS = [
     type: "text",
     x: 175,
     y: 370,
-    text: "Build on the canvas together.",
+    text: "Build together.",
+    width: 380,
+    height: 30,
     fontSize: 20,
     strokeColor: "#5f6368",
   },
@@ -291,6 +293,8 @@ function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkelet
         x,
         y,
         text: text || "New idea",
+        width: Math.max(260, width),
+        height: 34,
         fontSize: 22,
         strokeColor: color,
       },
@@ -332,6 +336,8 @@ function shapeSkeletons(input: Record<string, unknown>): ExcalidrawElementSkelet
         x: x + 20,
         y: y + 22,
         text: text || "New note",
+        width: width - 40,
+        height: 32,
         fontSize: 20,
         strokeColor: "#5e481e",
       },
@@ -390,6 +396,8 @@ function actionSkeletons(action: DrawingToolAction, input: Record<string, unknow
         x: x + 18,
         y: y + 18,
         text,
+        width: Math.max(280, numeric(input.width, 420) - 36),
+        height: 30,
         fontSize: 18,
         strokeColor: "#a64e31",
       },
@@ -403,6 +411,8 @@ function actionSkeletons(action: DrawingToolAction, input: Record<string, unknow
         x,
         y,
         text,
+        width: 380,
+        height: 34,
         fontSize: 22,
         strokeColor: "#315c91",
       },
@@ -685,6 +695,7 @@ function App() {
       __drawaiState?: {
         sceneCount: number;
         customTools: string[];
+        textElements: Array<{ text: string; width: number; height: number }>;
         runtimeMode: RuntimeMode;
         openStudio: () => void;
       };
@@ -692,6 +703,9 @@ function App() {
     debugWindow.__drawaiState = {
       sceneCount: sceneElements.length,
       customTools: drawingTools.map((tool) => tool.name),
+      textElements: sceneElements
+        .filter((element) => element.type === "text")
+        .map((element) => ({ text: element.text, width: element.width, height: element.height })),
       runtimeMode,
       openStudio: () => setStudioOpen(true),
     };
